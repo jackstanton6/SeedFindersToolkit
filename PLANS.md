@@ -149,3 +149,47 @@ coordinates, cave systems from biome and column analysis). They just won't get d
 1. Tier 1 blocks in order 1 to 6 (each block unlocks a group of scenarios).
 2. Tier 2 small ports.
 3. M2, then M3, then M4.
+
+## Current batch (requested 2026-10-10)
+
+Scope: all of Tier 1, Tier 2 small ports, speedrun filters (overworld parts) and chest loot. The
+project owner accepted the Minecraft EULA so the official server can be the ground truth for loot.
+
+Progress:
+- [x] `Hit` carries `bbox` (first piece box, y before terrain fitting) and `tags`. Done for scattered
+  features (desert pyramid, jungle temple, swamp hut: orientation = first nextInt(4)), monument
+  (58x58), jigsaw start piece, and ruined portal (template box + tags template/placement/giant/
+  mirrored/air_pocket). Igloo `basement` + `ladders:N`, shipwreck `template:` + `chest:<marker>`
+  (from template DATA markers), ocean ruin `large`/`cluster`/`ruins:N` (addClusterRuins simulated).
+  Parity suite still passes. **Not yet oracle-verified:** boxes and tags. Next step is an oracle
+  mode that runs `structure.generate()` and dumps piece 0's box and piece templates/count.
+- [ ] Rewrite `search.rs` conditions around a numeric core (design below).
+- [ ] Python DSL: expressions, `maximize`/`minimize`, comparisons; GUI templates, score column, top-N.
+- [ ] Single-seed scan (`World.scan`), attempts/heatmap overlays, placement stats, rarity CI.
+- [ ] Seed cracking (`engine/src/crack.rs`): low-bit lifting on even spacing limits, then brute
+  force of the high bits, then sister expansion with biome checks. Sister explorer = list mode.
+- [ ] Slime chunks (`WorldgenRandom.seedSlimeChunk(x, z, seed, 987234911).nextInt(10) == 0`; note
+  the int overflow in `x*x*4987142`, `x*5947611`, `z*389711`).
+- [ ] Chest loot: extract `loot_table`, `enchantment`, item/enchantment tags in `sft/data.py`; dump item
+  max stack sizes and enchantability with a small Java step; port LootTable fill (pools, entries,
+  conditions, functions, slot shuffle and split); loot seeds for buried treasure, shipwrecks,
+  ruined portals, igloo basement, desert pyramid (if its postProcess random use is world-free),
+  ocean ruins. Oracle: real server worlds (eula=true in cache/oracle-server), parse region files
+  for chest `LootTable`/`LootTableSeed`, plus in-process LootTable.fill for item rolls.
+- [ ] Speedrun presets: ruined portal completeness (obsidian count after processors) + chest loot,
+  village/temple/treasure near spawn, stronghold distance. Nether parts wait for M4.
+- [ ] Docs (Query-Language, Search-Modes, GUI, Accuracy) and the wiki examples.
+
+Design of the condition core (search.rs):
+- `Cond::{And, Or, Not, Metric{m, min, max}, Cmp{expr, min, max}, Objective{expr, maximize},
+  Anywhere{cond, at, within, step, anchor}, Native}`. Every metric has a numeric value; as a
+  condition it passes when `min <= value <= max` (defaults per metric).
+- Metrics: structure (count), nearest (distance), near (count of a with b within dist), cluster
+  (largest set covered by a circle of radius dist whose centre is within `within`; `afk=True` uses
+  boxes), chain (longest prefix), overlap (overlapping pairs), bingo (distinct sets), biome
+  (fraction), biome_area / biome_count / biome_border / island (flood fill on a biome grid), climate,
+  height, peak / trench / cliff / overhang / void / lake (height grid and column scans), slime (max
+  slime chunks within radius of a point).
+- Structure selectors accept `biome=` (biome at the start position) and `tags=` (all must match).
+- JSON expressions: `{"op":"num","value"}`, `{"op":"add|sub|mul|div","a","b"}`, `{"op":"neg","a"}`,
+  any metric node as a leaf. Objectives keep a top-N in Rust (threshold check before pushing).
