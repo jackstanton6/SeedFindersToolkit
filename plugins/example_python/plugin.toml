@@ -1,0 +1,5 @@
+name = "example_python"
+version = "0.1.0"
+description = "Python extension points: conditions, text-seed source, markdown exporter, seed info panel"
+minecraft = ["*"]
+python = "plugin.py"

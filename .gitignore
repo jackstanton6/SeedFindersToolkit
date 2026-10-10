@@ -1,0 +1,18 @@
+# Mojang code/data is never committed: it is regenerated locally by `python -m sft data`.
+client-refcode/
+decompiled/
+tools/
+data/
+cache/
+
+# Build output
+target/
+*.pyd
+*.so
+*.dylib
+*.dll
+__pycache__/
+*.egg-info/
+.venv/
+dist/
+build/

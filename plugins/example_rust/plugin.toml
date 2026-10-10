@@ -1,0 +1,5 @@
+name = "example_rust"
+version = "0.1.0"
+description = "Native filters: spawn_island (land ringed by ocean), tall_spawn (surface height at 0,0)"
+minecraft = ["26.3"]
+native = "target/release/example_rust"

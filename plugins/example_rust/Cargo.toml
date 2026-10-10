@@ -1,0 +1,11 @@
+[package]
+name = "example_rust"
+version = "0.1.0"
+edition = "2021"
+
+# Native plugins are plain C-ABI dynamic libraries: no dependency on the engine crate.
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
