@@ -197,11 +197,11 @@ impl<'w> Eval<'w> {
 
     fn hit(&mut self, set: usize, c: (i32, i32)) -> Option<Hit> {
         if let Some(h) = self.hits.get(&(set, c.0, c.1)) {
-            return *h;
+            return h.clone();
         }
         self.seeded();
         let h = self.w.structures.generate_set(self.s.as_mut().unwrap(), &mut self.bc, set, c.0, c.1);
-        self.hits.insert((set, c.0, c.1), h);
+        self.hits.insert((set, c.0, c.1), h.clone());
         h
     }
 

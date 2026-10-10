@@ -71,11 +71,21 @@ struct PortalSetup {
     weight: f32,
 }
 
+/// Which piece generator an on-top-of-chunk structure runs (for piece details).
+#[derive(Clone, Copy, Debug)]
+enum Piece {
+    SwampHut,
+    Igloo,
+    BuriedTreasure,
+    Shipwreck { beached: bool },
+    OceanRuin { large: f32, cluster: f32 },
+}
+
 #[derive(Clone, Debug)]
 enum Kind {
     Jigsaw { pool: String, height: HeightProv, project: Option<Heightmap>, start_jigsaw: Option<String>, padding: Option<(i32, i32)> },
-    SinglePiece(i32, i32),
-    OnTop(Heightmap),
+    SinglePiece(i32, i32, i32), // ScatteredFeaturePiece width, height, depth
+    OnTop(Heightmap, Piece),
     Monument,
     Mansion,
     RuinedPortal(Vec<PortalSetup>),
@@ -113,14 +123,20 @@ struct Pool {
 
 struct Template {
     size: [i32; 3],
+    markers: Vec<([i32; 3], String)>, // data markers (structure blocks in DATA mode), sorted by (y, x, z)
     jigsaws: Vec<([i32; 3], String, i32)>, // (pos, name, selection priority), sorted by (y, x, z)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub structure: usize,
     pub chunk: (i32, i32),
     pub pos: (i32, i32, i32),
+    /// First piece's box [minX, minY, minZ, maxX, maxY, maxZ] where cheap to know (y before
+    /// postProcess terrain fitting); None for structures whose layout needs the piece generator.
+    pub bbox: Option<[i32; 6]>,
+    /// Piece details: "basement", "large", "cluster", "ruins:6", "template:shipwreck/with_mast", ...
+    pub tags: Vec<String>,
 }
 
 pub struct Structures {
@@ -182,11 +198,19 @@ fn kind(v: &Value) -> Result<Kind, String> {
                 _ => None,
             },
         },
-        "minecraft:desert_pyramid" => Kind::SinglePiece(21, 21),
-        "minecraft:jungle_temple" => Kind::SinglePiece(12, 15),
-        "minecraft:swamp_hut" | "minecraft:igloo" => Kind::OnTop(Heightmap::WorldSurfaceWg),
-        "minecraft:ocean_ruin" | "minecraft:buried_treasure" => Kind::OnTop(Heightmap::OceanFloorWg),
-        "minecraft:shipwreck" => Kind::OnTop(if v["is_beached"].as_bool().unwrap_or(false) { Heightmap::WorldSurfaceWg } else { Heightmap::OceanFloorWg }),
+        "minecraft:desert_pyramid" => Kind::SinglePiece(21, 15, 21),
+        "minecraft:jungle_temple" => Kind::SinglePiece(12, 10, 15),
+        "minecraft:swamp_hut" => Kind::OnTop(Heightmap::WorldSurfaceWg, Piece::SwampHut),
+        "minecraft:igloo" => Kind::OnTop(Heightmap::WorldSurfaceWg, Piece::Igloo),
+        "minecraft:buried_treasure" => Kind::OnTop(Heightmap::OceanFloorWg, Piece::BuriedTreasure),
+        "minecraft:ocean_ruin" => Kind::OnTop(Heightmap::OceanFloorWg, Piece::OceanRuin {
+            large: f32_of(&v["large_probability"]),
+            cluster: f32_of(&v["cluster_probability"]),
+        }),
+        "minecraft:shipwreck" => {
+            let beached = v["is_beached"].as_bool().unwrap_or(false);
+            Kind::OnTop(if beached { Heightmap::WorldSurfaceWg } else { Heightmap::OceanFloorWg }, Piece::Shipwreck { beached })
+        }
         "minecraft:ocean_monument" => Kind::Monument,
         "minecraft:woodland_mansion" => Kind::Mansion,
         "minecraft:mineshaft" => Kind::Mineshaft,
@@ -313,8 +337,16 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
         None => root.get("palettes").and_then(|p| p.list().first()).map(|p| p.list()).unwrap_or(&[]),
     };
     let mut jigsaws = vec![];
+    let mut markers = vec![];
     for blk in root.get("blocks").map(|b| b.list()).unwrap_or(&[]) {
         let state = blk.get("state").map_or(0, Nbt::int) as usize;
+        let name = palette.get(state).and_then(|p| p.get("id").or(p.get("Name"))).map_or("", Nbt::str);
+        if let (true, Some(nbt)) = (name == "minecraft:structure_block", blk.get("nbt")) {
+            if nbt.get("mode").map_or("", Nbt::str) == "DATA" {
+                let p = blk.get("pos").map(|p| p.list()).unwrap_or(&[]);
+                markers.push(([p[0].int(), p[1].int(), p[2].int()], nbt.get("metadata").map_or("", Nbt::str).to_string()));
+            }
+        }
         // 26.x palettes use "id"; older templates use "Name"
         let is_jigsaw = palette.get(state).and_then(|p| p.get("id").or(p.get("Name"))).is_some_and(|n| n.str() == "minecraft:jigsaw");
         if let (true, Some(nbt)) = (is_jigsaw, blk.get("nbt")) {
@@ -327,7 +359,8 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
         }
     }
     jigsaws.sort_by_key(|(p, ..)| (p[1], p[0], p[2])); // StructureTemplate.buildInfoList order
-    Ok(Template { size, jigsaws })
+    markers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
+    Ok(Template { size, jigsaws, markers })
 }
 
 impl Structures {
@@ -387,6 +420,7 @@ impl Structures {
         }
         // Templates are only needed for start pieces and ruined portals; load those up front.
         let mut wanted: Vec<String> = PORTALS.iter().chain(GIANT_PORTALS.iter()).map(|p| format!("minecraft:{p}")).collect();
+        wanted.extend(SHIPWRECK_OCEAN.iter().chain(SHIPWRECK_BEACHED.iter()).map(|t| format!("minecraft:shipwreck/{t}")));
         fn collect(e: &Element, out: &mut Vec<String>) {
             match e {
                 Element::Single(l) => out.push(l.clone()),
@@ -557,28 +591,34 @@ impl Structures {
         None
     }
 
-    /// Structure.findValidGenerationPoint
+    /// Structure.findValidGenerationPoint, then the cheap start of the piece generator (first piece
+    /// box, details), which continues on the same context random.
     pub fn generate(&self, s: &mut Seeded, bc: &mut BiomeCtx, st: usize, cx: i32, cz: i32) -> Option<Hit> {
-        let p = self.generation_point(s, bc, st, cx, cz)?;
-        contains(self.structures[st].biomes, s.biome(bc, p.0 >> 2, p.1 >> 2, p.2 >> 2)).then_some(Hit { structure: st, chunk: (cx, cz), pos: p })
-    }
-
-    fn generation_point(&self, s: &mut Seeded, bc: &mut BiomeCtx, st: usize, cx: i32, cz: i32) -> Option<(i32, i32, i32)> {
-        let structure = &self.structures[st];
-        let (min_y, max_y, sea) = (s.w.min_y, s.w.min_y + s.w.height - 1, s.w.sea_level);
         let mut r = JavaRandom::new(0);
         r.set_large_feature_seed(s.seed, cx, cz);
+        let (p, mut bbox, mut tags) = self.generation_point(s, bc, &mut r, st, cx, cz)?;
+        if !contains(self.structures[st].biomes, s.biome(bc, p.0 >> 2, p.1 >> 2, p.2 >> 2)) {
+            return None;
+        }
+        self.piece_details(&mut r, st, cx, cz, &mut bbox, &mut tags);
+        Some(Hit { structure: st, chunk: (cx, cz), pos: p, bbox, tags })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn generation_point(&self, s: &mut Seeded, bc: &mut BiomeCtx, r: &mut JavaRandom, st: usize, cx: i32, cz: i32) -> Option<((i32, i32, i32), Option<[i32; 6]>, Vec<String>)> {
+        let structure = &self.structures[st];
+        let (min_y, max_y, sea) = (s.w.min_y, s.w.min_y + s.w.height - 1, s.w.sea_level);
         let (mx, mz) = (cx * 16 + 8, cz * 16 + 8);
         let on_top = |s: &mut Seeded, bc: &mut BiomeCtx, hm| {
             column_ok(s, bc, structure.biomes, mx, mz, min_y - 1, max_y).then(|| (mx, s.base_height(mx, mz, hm) - 1, mz))
         };
         match &structure.kind {
-            Kind::OnTop(hm) => on_top(s, bc, *hm),
-            Kind::SinglePiece(w, d) => {
+            Kind::OnTop(hm, _) => on_top(s, bc, *hm).map(|p| (p, None, vec![])),
+            Kind::SinglePiece(w, _, d) => {
                 if !column_ok(s, bc, structure.biomes, mx, mz, min_y - 1, max_y) || lowest_y(s, cx * 16, cz * 16, *w, *d) < sea {
                     return None;
                 }
-                Some((mx, s.base_height(mx, mz, Heightmap::WorldSurfaceWg) - 1, mz))
+                Some(((mx, s.base_height(mx, mz, Heightmap::WorldSurfaceWg) - 1, mz), None, vec![]))
             }
             Kind::Monument => {
                 let (x, z) = (cx * 16 + 9, cz * 16 + 9);
@@ -592,7 +632,7 @@ impl Structures {
                         }
                     }
                 }
-                on_top(s, bc, Heightmap::OceanFloorWg)
+                on_top(s, bc, Heightmap::OceanFloorWg).map(|p| (p, None, vec![]))
             }
             Kind::Mansion => {
                 let (x, z) = (cx * 16 + 7, cz * 16 + 7);
@@ -601,12 +641,12 @@ impl Structures {
                 }
                 let (ox, oz) = match r.next_bound(4) { 0 => (5, 5), 1 => (-5, 5), 2 => (-5, -5), _ => (5, -5) };
                 let y = lowest_y(s, x, z, ox, oz);
-                (y >= 60).then_some((x, y, z))
+                (y >= 60).then_some(((x, y, z), None, vec![]))
             }
-            Kind::Stronghold => Some((cx * 16, 0, cz * 16)),
+            Kind::Stronghold => Some(((cx * 16, 0, cz * 16), None, vec![])),
             // ponytail: depth comes from the mineshaft piece layout (MineshaftPieces, M3); y=50 start for now
-            Kind::Mineshaft => Some((mx, 50, cz * 16)),
-            Kind::RuinedPortal(setups) => self.portal_point(s, &mut r, setups, cx, cz),
+            Kind::Mineshaft => Some(((mx, 50, cz * 16), None, vec![])),
+            Kind::RuinedPortal(setups) => self.portal_point(s, r, setups, cx, cz),
             Kind::Jigsaw { pool, height, project, start_jigsaw, padding } => {
                 let y = match height {
                     HeightProv::Const(a) => resolve(a, s),
@@ -627,7 +667,7 @@ impl Structures {
                     return None;
                 }
                 let anchored = match start_jigsaw {
-                    Some(name) => self.named_jigsaw(el, name, pos, rot, &mut r)?,
+                    Some(name) => self.named_jigsaw(el, name, pos, rot, r)?,
                     None => pos,
                 };
                 let local = [anchored[0] - pos[0], anchored[1] - pos[1], anchored[2] - pos[2]];
@@ -651,9 +691,48 @@ impl Structures {
                         return None;
                     }
                 }
-                Some((cxm, bottom + local[1], czm))
+                Some(((cxm, bottom + local[1], czm), Some(b), vec![]))
             }
             Kind::Unsupported => None,
+        }
+    }
+
+    /// The first random calls of each simple piece generator (generatePieces), for boxes and details.
+    fn piece_details(&self, r: &mut JavaRandom, st: usize, cx: i32, cz: i32, bbox: &mut Option<[i32; 6]>, tags: &mut Vec<String>) {
+        let (x0, z0) = (cx * 16, cz * 16);
+        match &self.structures[st].kind {
+            Kind::SinglePiece(w, h, d) => *bbox = Some(scattered_box(x0, z0, r.next_bound(4), *w, *h, *d)),
+            Kind::OnTop(_, Piece::SwampHut) => *bbox = Some(scattered_box(x0, z0, r.next_bound(4), 7, 7, 9)),
+            Kind::Monument => *bbox = Some([x0 - 29, 39, z0 - 29, x0 + 28, 61, z0 + 28]),
+            Kind::OnTop(_, Piece::Igloo) => {
+                r.next_bound(4); // rotation
+                if r.next_double() < 0.5 {
+                    tags.push("basement".into());
+                    tags.push(format!("ladders:{}", r.next_bound(8) + 4));
+                }
+            }
+            Kind::OnTop(_, Piece::Shipwreck { beached }) => {
+                r.next_bound(4); // rotation
+                let list: &[&str] = if *beached { &SHIPWRECK_BEACHED } else { &SHIPWRECK_OCEAN };
+                let t = list[r.next_bound(list.len() as i32) as usize];
+                tags.push(format!("template:shipwreck/{t}"));
+                for (_, m) in self.templates.get(&format!("minecraft:shipwreck/{t}")).map_or(&[][..], |t| &t.markers) {
+                    tags.push(format!("chest:{m}"));
+                }
+            }
+            Kind::OnTop(_, Piece::OceanRuin { large, cluster }) => {
+                let rot = r.next_bound(4);
+                let is_large = r.next_float() <= *large;
+                r.next_bound(if is_large { 4 } else { 8 }); // template
+                if is_large {
+                    tags.push("large".into());
+                    if r.next_float() <= *cluster {
+                        tags.push("cluster".into());
+                        tags.push(format!("ruins:{}", 1 + cluster_ruins(r, rot, x0, z0)));
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -680,7 +759,8 @@ impl Structures {
         }
     }
 
-    fn portal_point(&self, s: &mut Seeded, r: &mut JavaRandom, setups: &[PortalSetup], cx: i32, cz: i32) -> Option<(i32, i32, i32)> {
+    #[allow(clippy::type_complexity)]
+    fn portal_point(&self, s: &mut Seeded, r: &mut JavaRandom, setups: &[PortalSetup], cx: i32, cz: i32) -> Option<((i32, i32, i32), Option<[i32; 6]>, Vec<String>)> {
         let setup = if setups.len() > 1 {
             let total: f32 = setups.iter().fold(0.0, |t, s| t + s.weight);
             let mut pick = r.next_float();
@@ -689,7 +769,8 @@ impl Structures {
             &setups[0]
         };
         let air = match setup.air_pocket { 0.0 => false, 1.0 => true, p => r.next_float() < p };
-        let name = if r.next_float() < 0.05 { GIANT_PORTALS[r.next_bound(3) as usize] } else { PORTALS[r.next_bound(10) as usize] };
+        let giant = r.next_float() < 0.05;
+        let name = if giant { GIANT_PORTALS[r.next_bound(3) as usize] } else { PORTALS[r.next_bound(10) as usize] };
         let size = self.templates.get(&format!("minecraft:{name}"))?.size;
         let rot = r.next_bound(4);
         let mirror = r.next_float() >= 0.5;
@@ -710,6 +791,9 @@ impl Structures {
         };
         let columns: Vec<Vec<Block>> = [(b[0], b[2]), (b[3], b[2]), (b[0], b[5]), (b[3], b[5])].iter().map(|&(x, z)| s.column(x, z)).collect();
         let at = |col: &Vec<Block>, y: i32| col.get((y - s.w.min_y) as usize).copied().filter(|_| y >= s.w.min_y).unwrap_or(Block::Air);
+        let mut tags = vec![format!("template:{name}"), format!("placement:{:?}", setup.placement).to_lowercase()];
+        tags.extend([(giant, "giant"), (mirror, "mirrored"), (air, "air_pocket")].iter().filter(|t| t.0).map(|t| t.1.to_string()));
+        let done = |y: i32| Some(((cx * 16, y, cz * 16), Some([b[0], b[1] + y, b[2], b[3], b[4] + y, b[5]]), tags.clone()));
         let mut y = new_y;
         while y > min_y {
             let mut solid = 0;
@@ -717,19 +801,65 @@ impl Structures {
                 if hm.test(at(c, y)) {
                     solid += 1;
                     if solid == 3 {
-                        return Some((cx * 16, y, cz * 16));
+                        return done(y);
                     }
                 }
             }
             y -= 1;
         }
-        Some((cx * 16, y, cz * 16))
+        done(y)
     }
 }
 
 // ------------------------------------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------------------------------------
+
+const SHIPWRECK_BEACHED: [&str; 11] = [
+    "with_mast", "sideways_full", "sideways_fronthalf", "sideways_backhalf", "rightsideup_full", "rightsideup_fronthalf",
+    "rightsideup_backhalf", "with_mast_degraded", "rightsideup_full_degraded", "rightsideup_fronthalf_degraded", "rightsideup_backhalf_degraded",
+];
+const SHIPWRECK_OCEAN: [&str; 20] = [
+    "with_mast", "upsidedown_full", "upsidedown_fronthalf", "upsidedown_backhalf", "sideways_full", "sideways_fronthalf",
+    "sideways_backhalf", "rightsideup_full", "rightsideup_fronthalf", "rightsideup_backhalf", "with_mast_degraded",
+    "upsidedown_full_degraded", "upsidedown_fronthalf_degraded", "upsidedown_backhalf_degraded", "sideways_full_degraded",
+    "sideways_fronthalf_degraded", "sideways_backhalf_degraded", "rightsideup_full_degraded", "rightsideup_fronthalf_degraded",
+    "rightsideup_backhalf_degraded",
+];
+
+/// ScatteredFeaturePiece box at y=64 (before terrain fitting); direction index NORTH, EAST, SOUTH, WEST.
+fn scattered_box(x: i32, z: i32, dir: i32, w: i32, h: i32, d: i32) -> [i32; 6] {
+    if dir % 2 == 0 { [x, 64, z, x + w - 1, 64 + h - 1, z + d - 1] } else { [x, 64, z, x + d - 1, 64 + h - 1, z + w - 1] }
+}
+
+/// OceanRuinPieces.addClusterRuins: how many extra ruins the cluster adds.
+fn cluster_ruins(r: &mut JavaRandom, rot: i32, x: i32, z: i32) -> i32 {
+    let ni = |r: &mut JavaRandom, a: i32, b: i32| if a >= b { a } else { r.next_bound(b - a + 1) + a };
+    let corner = transform([15, 0, 15], false, rot, (0, 0));
+    let parent = [x.min(x + corner[0]), z.min(z + corner[2]), x.max(x + corner[0]), z.max(z + corner[2])];
+    let (bx, bz) = (parent[0], parent[1]);
+    let offs: [(i32, i32, i32, i32, i32); 8] = [(-16, 1, 8, 16, 1), (-16, 1, 8, 0, 1), (-16, 1, 8, -16, 4), (0, 1, 7, 16, 1), (0, 1, 7, -16, 4), (16, 1, 7, 16, 3), (16, 1, 7, 0, 1), (16, 1, 7, -16, 4)];
+    let zmax = [7, 7, 8, 7, 6, 8, 7, 8];
+    let mut positions: Vec<(i32, i32)> = offs.iter().zip(zmax).map(|(&(dx, a, b, dz, c), zm)| {
+        let px = bx + dx + ni(r, a, b);
+        (px, bz + dz + ni(r, c, zm))
+    }).collect();
+    let count = ni(r, 4, 8);
+    let mut added = 0;
+    for _ in 0..count {
+        if positions.is_empty() {
+            continue;
+        }
+        let (px, pz) = positions.remove(r.next_bound(positions.len() as i32) as usize);
+        let c = transform([5, 0, 6], false, r.next_bound(4), (0, 0));
+        let (ax, az, cx2, cz2) = (px.min(px + c[0]), pz.min(pz + c[2]), px.max(px + c[0]), pz.max(pz + c[2]));
+        if !(cx2 >= parent[0] && ax <= parent[2] && cz2 >= parent[1] && az <= parent[3]) {
+            r.next_bound(8); // small ruin template
+            added += 1;
+        }
+    }
+    added
+}
 
 fn resolve(a: &Anchor, s: &Seeded) -> i32 {
     match *a {
