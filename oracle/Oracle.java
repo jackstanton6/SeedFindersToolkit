@@ -40,6 +40,7 @@ public class Oracle {
         var ctx = net.minecraft.tags.TagLoader.buildUpdatedLookups(layers.getAccessForLoading(net.minecraft.server.RegistryLayer.WORLD), staticTags);
         var world = net.minecraft.resources.RegistryDataLoader.load(rm, ctx, net.minecraft.resources.RegistryDataLoader.WORLD_REGISTRIES, Runnable::run).join();
         staticTags.forEach(net.minecraft.core.Registry.PendingTags::apply);
+        var access = layers.replaceFrom(net.minecraft.server.RegistryLayer.WORLD, world).compositeAccess(); // static + world, as the server sees it
 
         Holder<NoiseGeneratorSettings> settings = world.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(NoiseGeneratorSettings.OVERWORLD);
         RandomState rs = RandomState.create(world.lookupOrThrow(Registries.NOISE), seed, settings.value());
@@ -53,6 +54,7 @@ public class Oracle {
         var state = net.minecraft.world.level.chunk.ChunkGeneratorStructureState.createForNormal(
             rs, seed, new net.minecraft.world.level.ChunkPos(0, 0), source, world.lookupOrThrow(Registries.STRUCTURE_SET));
 
+        StringBuilder piecesOut = new StringBuilder();
         sb.append(",\"radius\":").append(radius).append(",\"starts\":[");
         boolean first = true;
         for (var setHolder : state.possibleStructureSets()) {
@@ -77,11 +79,24 @@ public class Oracle {
                     var selected = options.get(index);
                     var structure = selected.structure().value();
                     var gc = new net.minecraft.world.level.levelgen.structure.Structure.GenerationContext(
-                        world, gen, source, sampler, rs, templates, seed, chunk, level, structure.biomes()::contains);
+                        access, gen, source, sampler, rs, templates, seed, chunk, level, structure.biomes()::contains);
                     var stub = structure.findValidGenerationPoint(gc);
                     if (stub.isPresent()) {
                         hit = selected.structure().unwrapKey().orElseThrow().identifier().toString();
                         pos = stub.get().position();
+                        // the real piece generator, continuing on the same context random
+                        var pieces = stub.get().getPiecesBuilder().build().pieces();
+                        var b = pieces.get(0).getBoundingBox();
+                        String template = "";
+                        if (pieces.get(0) instanceof net.minecraft.world.level.levelgen.structure.TemplateStructurePiece tp) {
+                            var f = net.minecraft.world.level.levelgen.structure.TemplateStructurePiece.class.getDeclaredField("templateName");
+                            f.setAccessible(true);
+                            template = (String) f.get(tp);
+                        }
+                        piecesOut.append(piecesOut.length() == 0 ? "" : ",").append("[\"").append(setName).append("\",").append(cx).append(',').append(cz)
+                            .append(",[").append(b.minX()).append(',').append(b.minY()).append(',').append(b.minZ()).append(',')
+                            .append(b.maxX()).append(',').append(b.maxY()).append(',').append(b.maxZ()).append("],")
+                            .append(pieces.size()).append(",\"").append(template).append("\"]");
                         break;
                     }
                     options.remove(index);
@@ -94,6 +109,7 @@ public class Oracle {
                 sb.append(']');
             }
         }
+        sb.append("],\"pieces\":[").append(piecesOut);
         sb.append("],\"rings\":[");
         first = true;
         for (var setHolder : state.possibleStructureSets()) {

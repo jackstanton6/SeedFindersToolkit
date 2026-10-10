@@ -135,6 +135,48 @@ fn structures_match() {
 
 #[test]
 #[ignore]
+fn piece_details_match() {
+    let w = world();
+    let st = &w.structures;
+    let mut checked = 0;
+    for f in fixtures("structures") {
+        let seed = f["seed"].as_i64().unwrap();
+        let mut s = Seeded::new(w, seed);
+        for p in f["pieces"].as_array().unwrap() {
+            let set_name = p[0].as_str().unwrap();
+            let (cx, cz) = (p[1].as_i64().unwrap() as i32, p[2].as_i64().unwrap() as i32);
+            let want_box: Vec<i32> = p[3].as_array().unwrap().iter().map(|v| v.as_i64().unwrap() as i32).collect();
+            let (count, template) = (p[4].as_i64().unwrap() as i32, p[5].as_str().unwrap());
+            let set = st.sets.iter().position(|x| x.name == set_name).unwrap();
+            let h = st.generate_set(&mut s, &mut BiomeCtx::cached(), set, cx, cz).expect("oracle hit must generate");
+            let name = &st.structures[h.structure].name;
+            let tag = |k: &str| h.tags.iter().find_map(|t| t.strip_prefix(k).map(str::to_string));
+            let ctx = format!("seed {seed} {name} chunk ({cx},{cz}) tags {:?}", h.tags);
+            if let Some(b) = h.bbox {
+                assert_eq!(b.to_vec(), want_box, "box: {ctx}");
+            }
+            if name.contains("igloo") {
+                assert_eq!(h.tags.contains(&"basement".to_string()), count > 1, "{ctx}");
+                if count > 1 {
+                    assert_eq!(tag("ladders:"), Some((count - 1).to_string()), "{ctx}");
+                }
+            }
+            if name.contains("shipwreck") || name.contains("ruined_portal") {
+                assert_eq!(tag("template:").map(|t| format!("minecraft:{t}")), Some(template.to_string()), "{ctx}");
+            }
+            if name.contains("ocean_ruin") {
+                assert_eq!(h.tags.contains(&"large".to_string()), template.contains("big"), "{ctx}");
+                let ruins = if name.contains("cold") { count / 3 } else { count };
+                assert_eq!(tag("ruins:").unwrap_or("1".into()), ruins.to_string(), "{ctx}");
+            }
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} piece rows checked");
+}
+
+#[test]
+#[ignore]
 fn heights_match() {
     let w = world();
     for f in fixtures("heights") {
