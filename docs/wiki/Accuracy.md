@@ -56,8 +56,6 @@ cd engine && cargo test --release -- --ignored
   strongholds, mineshafts, ancient cities, trial chambers, dungeons. Their tables can be rolled
   (`World.loot(table, seed)`), but the per-structure loot seeds need their piece layouts (M3).
 - **location_check** (abandoned camp and mineshaft tables) is evaluated on noise-biome resolution.
-- **Portal frames** are the 4×5 frame that holds the most template obsidian; for broken templates
-  with several equally good frames the best one for the seed is taken.
 - **Stronghold angles** use the platform `cos`/`sin`. Java may differ in the last bit, which can only
   matter for a value within ~1e-13 of a rounding boundary.
 

@@ -183,8 +183,9 @@ Progress:
   BlockAgeProcessor, 40 real portals match), frame + chest obsidian, flint and steel, treasure
   diamonds, shipwreck iron, temple + village, close stronghold. Nether parts wait for M4.
 - [x] Docs: Query-Language, Search-Modes, GUI, Accuracy, README, AGENTS.
-- [ ] Left from this batch: exact frame definitions for broken portal
-  templates instead of best-frame detection.
+- [x] Portal frames: exact per seed instead of best-4x5 detection. `portal_frame` = 10 minus the
+  blocks the most complete upright frame (any size, 4x5 to 23x23) still misses; 40 real portals
+  (3 giant) match when recomputed from their world blocks.
 
 Design of the condition core (search.rs):
 - `Cond::{And, Or, Not, Metric{m, min, max}, Cmp{expr, min, max}, Objective{expr, maximize},

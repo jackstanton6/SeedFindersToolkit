@@ -263,7 +263,7 @@ fn structure_chests_match() {
 #[ignore]
 fn portal_obsidian_matches() {
     let w = world();
-    let (mut checked, mut bad, mut skipped) = (0, 0, 0);
+    let (mut checked, mut bad, mut skipped, mut giant) = (0, 0, 0, 0);
     for f in fixtures("loot-world") {
         let seed = f["seed"].as_i64().unwrap();
         let real: Vec<Vec<i64>> = f["obsidian"].as_array().unwrap().iter().map(|o| {
@@ -284,16 +284,21 @@ fn portal_obsidian_matches() {
                 skipped += 1;
                 continue;
             }
-            if got != want {
+            // frame completeness from the real blocks (world coordinates, so this also checks the placement transform)
+            let plain: Vec<[i32; 3]> = real.iter().filter(inside).filter(|o| o[3] == 0).map(|o| [o[0] as i32, o[1] as i32, o[2] as i32]).collect();
+            let frame = h.tags.iter().find_map(|t| t.strip_prefix("frame:")).map(|v| v.parse::<usize>().unwrap());
+            let want_frame = frame.map(|_| sft_engine::structure::frame_value(&sft_engine::structure::portal_frames(&plain), |_| true));
+            if got != want || frame != want_frame {
                 if bad < 10 {
-                    eprintln!("seed {seed} portal {:?} {:?}: engine obsidian {got} real {want}", h.pos, h.tags);
+                    eprintln!("seed {seed} portal {:?} {:?}: engine obsidian {got} frame {frame:?}, real {want} {want_frame:?}", h.pos, h.tags);
                 }
                 bad += 1;
             }
             checked += 1;
+            giant += template.contains("giant") as usize;
         }
     }
-    eprintln!("{checked} portals checked, {skipped} skipped (foreign obsidian in the box)");
+    eprintln!("{checked} portals checked ({giant} giant), {skipped} skipped (foreign obsidian in the box)");
     assert!(checked > 0);
     assert_eq!(bad, 0, "{bad}/{checked} portals differ");
 }

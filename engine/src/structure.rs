@@ -142,7 +142,7 @@ struct Template {
     size: [i32; 3],
     containers: Vec<([i32; 3], String)>, // blocks with NBT that are loot containers (+ LootTable), (y, x, z) order
     obsidian: Vec<[i32; 3]>,
-    frames: Vec<Vec<[i32; 3]>>, // ruined portals: the 4x5 frames (no corners) holding the most obsidian
+    frames: Vec<(usize, Vec<[i32; 3]>)>, // ruined portals: lightable frames reusing its obsidian (portal_frames)
     markers: Vec<([i32; 3], String)>, // data markers (structure blocks in DATA mode), sorted by (y, x, z)
     jigsaws: Vec<([i32; 3], String, i32)>, // (pos, name, selection priority), sorted by (y, x, z)
 }
@@ -415,7 +415,7 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
     jigsaws.sort_by_key(|(p, ..)| (p[1], p[0], p[2])); // StructureTemplate.buildInfoList order
     markers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
     containers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
-    let frames = if location.contains("ruined_portal/portal_") { portal_frames(&obsidian, size) } else { vec![] };
+    let frames = if location.contains("ruined_portal/") { portal_frames(&obsidian) } else { vec![] };
     Ok(Template { size, jigsaws, markers, containers, obsidian, frames })
 }
 
@@ -892,9 +892,7 @@ impl Structures {
                     };
                     let n = t.obsidian.iter().filter(|p| plain(p)).count();
                     tags.push(format!("obsidian:{n}"));
-                    if let Some(f) = t.frames.iter().map(|f| f.iter().filter(|p| t.obsidian.contains(p) && plain(p)).count()).max() {
-                        tags.push(format!("frame:{f}"));
-                    }
+                    tags.push(format!("frame:{}", frame_value(&t.frames, plain)));
                 }
             }
             _ => {}
@@ -1125,36 +1123,54 @@ const SHIPWRECK_OCEAN: [&str; 20] = [
     "rightsideup_backhalf_degraded",
 ];
 
-/// Ruined portal frames: every 4 wide x 5 tall frame (corners not needed, 10 blocks), standing or
-/// lying, that holds the most template obsidian. Broken portals can tie; the caller takes the best.
-fn portal_frames(obsidian: &[[i32; 3]], size: [i32; 3]) -> Vec<Vec<[i32; 3]>> {
-    let mut best: (usize, Vec<Vec<[i32; 3]>>) = (0, vec![]);
-    for (wa, ha) in [(0, 1), (2, 1), (0, 2), (2, 0)] {
-        for bx in -1..=size[0] {
-            for by in -1..=size[1] {
-                for bz in -1..=size[2] {
-                    let frame: Vec<[i32; 3]> = (0..4)
-                        .flat_map(|i| (0..5).map(move |j| (i, j)))
-                        .filter(|&(i, j)| (i == 0 || i == 3 || j == 0 || j == 4) && !((i == 0 || i == 3) && (j == 0 || j == 4)))
-                        .map(|(i, j)| {
-                            let mut p = [bx, by, bz];
-                            p[wa] += i;
-                            p[ha] += j;
-                            p
-                        })
-                        .collect();
-                    let n = frame.iter().filter(|p| obsidian.contains(p)).count();
-                    if n > best.0 {
-                        best = (n, vec![]);
+/// Lightable portal frames that reuse `obsidian`: vertical (lying frames cannot be lit), 4..23 wide
+/// and 5..23 tall, corners not needed, missing at most 9 blocks. Returns (frame blocks, obsidian on it).
+/// A 4x5 frame anywhere misses at most 10, so these are the only frames that can beat building one.
+pub fn portal_frames(obsidian: &[[i32; 3]]) -> Vec<(usize, Vec<[i32; 3]>)> {
+    let lo = |a: usize| obsidian.iter().map(|p| p[a]).min().unwrap_or(0);
+    let hi = |a: usize| obsidian.iter().map(|p| p[a]).max().unwrap_or(0);
+    let mut out = vec![];
+    for wa in [0, 2] {
+        let fa = 2 - wa;
+        let mut planes: Vec<i32> = obsidian.iter().map(|p| p[fa]).collect();
+        planes.sort();
+        planes.dedup();
+        for w in 4..=23 {
+            for h in 5..=23 {
+                let len = 2 * (w - 2 + h - 2) as usize;
+                if len > 9 + obsidian.len() {
+                    continue;
+                }
+                for &c in &planes {
+                    if len - obsidian.iter().filter(|p| p[fa] == c).count().min(len) > 9 {
+                        continue;
                     }
-                    if n == best.0 && n > 0 {
-                        best.1.push(frame);
+                    for bw in lo(wa) - w + 1..=hi(wa) {
+                        for bh in lo(1) - h + 1..=hi(1) {
+                            let on: Vec<[i32; 3]> = obsidian
+                                .iter()
+                                .filter(|p| {
+                                    let (i, j) = (p[wa] - bw, p[1] - bh);
+                                    let (ei, ej) = (i == 0 || i == w - 1, j == 0 || j == h - 1);
+                                    p[fa] == c && (0..w).contains(&i) && (0..h).contains(&j) && (ei || ej) && !(ei && ej)
+                                })
+                                .copied()
+                                .collect();
+                            if len - on.len() <= 9 {
+                                out.push((len, on));
+                            }
+                        }
                     }
                 }
             }
         }
     }
-    best.1
+    out
+}
+
+/// `portal_frame` value: 10 minus the blocks the most complete frame still misses (10 = lightable).
+pub fn frame_value(frames: &[(usize, Vec<[i32; 3]>)], plain: impl Fn(&[i32; 3]) -> bool) -> usize {
+    10usize.saturating_sub(frames.iter().map(|(len, on)| len - on.iter().filter(|p| plain(p)).count()).min().unwrap_or(10))
 }
 
 /// ScatteredFeaturePiece box at y=64 (before terrain fitting); direction index NORTH, EAST, SOUTH, WEST.
@@ -1284,4 +1300,30 @@ fn find_biome_horizontal(s: &Seeded, x: i32, y: i32, z: i32, radius: i32, allowe
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Frame blocks (no corners) of a w x h frame in the z-y plane at x=0, origin (0, 0, 0).
+    fn frame(w: i32, h: i32) -> Vec<[i32; 3]> {
+        (0..w).flat_map(|i| (0..h).map(move |j| [0, j, i])).filter(|p| (p[2] == 0 || p[2] == w - 1) != (p[1] == 0 || p[1] == h - 1)).collect()
+    }
+
+    #[test]
+    fn frame_value_counts_missing_blocks() {
+        let all = |_: &[i32; 3]| true;
+        assert_eq!(frame_value(&portal_frames(&frame(4, 5)), all), 10);
+        // a 5x5 frame with one block gone is one short, not judged as a 4x5 frame
+        let mut f = frame(5, 5);
+        f.pop();
+        assert_eq!(frame_value(&portal_frames(&f), all), 9);
+        // crying obsidian counts as missing
+        assert_eq!(frame_value(&portal_frames(&frame(4, 5)), |p| p[1] != 0), 8);
+        // lying frames cannot be lit; only a vertical frame through one of its edges remains
+        let lying: Vec<[i32; 3]> = frame(4, 5).iter().map(|p| [p[1], 0, p[2]]).collect();
+        assert_eq!(frame_value(&portal_frames(&lying), all), 2);
+        assert_eq!(frame_value(&portal_frames(&[]), all), 0);
+    }
 }

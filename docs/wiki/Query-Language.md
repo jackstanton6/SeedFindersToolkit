@@ -223,10 +223,11 @@ loot("shipwreck", "enchanted_book", enchant="mending", within=1500)
 
 ### portal_frame(within=1000, at=(0,0)) / portal_obsidian(...)
 
-For the best ruined portal in range: `portal_frame` is how many of the 10 frame blocks (a 4×5 frame
-without corners) are plain obsidian; 10 is a lightable frame. `portal_obsidian` is all of the
-portal's plain obsidian. Crying obsidian, which the game rolls per block, is excluded. Giant
-portals have no frame value.
+For the best ruined portal in range: `portal_frame` is 10 minus the obsidian still missing from the
+most complete frame you could light there; 10 is a lightable frame. The frame may be any valid size
+(4×5 up to 23×23, corners not needed) but must stand upright: a fallen portal only counts for the
+blocks an upright frame through it can reuse. `portal_obsidian` is all of the portal's plain
+obsidian. Crying obsidian, which the game rolls per block, is excluded. Giant portals count too.
 
 ```python
 portal_frame(within=150) + loot("ruined_portal", "obsidian", within=150) >= 10   # completable from the chest
