@@ -24,12 +24,18 @@ engine/src/
                 full eval (Eval); single-seed scan
   search.rs     threaded search runner (modes, stats, ranked top-N), native plugin ABI
   crack.rs      structure-seed cracking (low-bit lifting + brute force)
+  gpu.rs        CUDA driver API (loaded at runtime), query -> GPU program lowering, filter/crack launches
+  gpu.cu        CUDA kernels: literal ports of JavaRandom, grid_chunk, frequency_ok, potential, slime
+engine/build.rs compiles gpu.cu to PTX when nvcc exists (cfg sft_cuda); otherwise the GPU is unavailable
   loot.rs       LootTable.fill over the vanilla loot JSON
   lib.rs        PyO3 bindings (feature "python") -> sft._engine
 engine/tests/oracle.rs   parity tests against the real game (ignored by default)
+engine/tests/gpu.rs      GPU kernel vs CPU pre-check parity (ignored; needs a CUDA device)
 oracle/Oracle.java       ground-truth dumper that runs the actual 26.3 server classes
 tests/loot_oracle.py     loot ground truth from the dedicated server (EULA) and its region files
 sft/            __init__ (World cache, Job, export), query, plugins, data, __main__ (CLI), gui/
+sft/gui/        app (main window), blocks (block editor + palette), wizard ("I want..."), help (help
+                window + tour), mapview
 plugins/        example_rust (native cdylib), example_python
 docs/wiki/      user documentation
 ```
@@ -46,6 +52,8 @@ python tests/loot_oracle.py fill                   # dedicated server; loot tabl
 python tests/loot_oracle.py world 0 12345 35467 59104   # real worlds; chest seeds, portal obsidian
 cd engine && cargo test --release -- --ignored     # parity suite: must stay at zero mismatches
 python tests/test_query.py                         # DSL tests
+python tests/test_gui.py                           # blocks <-> text, wizard, drag and drop (offscreen)
+cd engine && cargo test --release --test gpu -- --ignored   # GPU parity (CUDA device)
 python -m sft                                      # GUI
 ```
 
@@ -99,7 +107,9 @@ new behaviour "looks" better.
   (`BiomeManager` zoom).
 - **M3:** structure pieces (mineshaft depth exact, village layouts, loot), features and decoration
   (trees, sugar cane, cacti, ores, geodes).
-- **M4:** carvers and full block-level generation; optional CUDA brute-force stage; Nether/End.
+- **GPU batch (done):** CUDA seed-only pre-filter and crack brute force, block query builder and
+  wizard, in-app help and tour, jungle temple loot, search progress/estimate fixes.
+- **M4:** carvers and full block-level generation; Nether/End.
 - **Versions:** see docs/wiki/Versions.md.
 
 ## Decompiled reference

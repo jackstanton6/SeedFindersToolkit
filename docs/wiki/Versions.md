@@ -24,7 +24,7 @@ compiled density functions), the port must follow.
    field in `World`. Keep the old behaviour for older data folders.
 4. If the overworld router reaches a density function type the engine doesn't know, loading the
    version fails with that function's name and type. Structure types without a port show as
-   `~approx` in the reference list and never generate.
+   not exact (`World.structures()` reports `exact = False`; the map marks them with `?`) and never generate.
 
 Older versions (1.18 to 1.21) use double-precision noise and the pre-26 density functions. Supporting
 them means bringing back those code paths behind a version switch, verified the same way.

@@ -3,9 +3,11 @@
 A seed finder for advanced users, built around a bit-exact port of Minecraft Java 26.3 world
 generation. Write a query (structures, clusters and chains of structures, biomes, islands, terrain,
 slime chunks, chest loot, plugin filters, or a score to maximize), and a Rust engine scans billions
-of seeds in parallel while the PySide6 GUI shows progress, rate, estimated total time, ETA and the
-odds of a match. It also scans one seed for every place a pattern occurs and cracks seeds from
-structures seen in a world.
+of seeds in parallel (and on an NVIDIA GPU where it helps) while the PySide6 GUI shows progress,
+rate, estimated total time, ETA and the odds of a match. Queries are built from blocks that read
+like sentences, or with an "I want..." wizard; the app has a built-in guide and a first-start tour.
+It also scans one seed for every place a pattern occurs and cracks seeds from structures seen in a
+world.
 
 ## Status
 
@@ -21,7 +23,7 @@ structures seen in a world.
 | Ruined portal obsidian and frame completeness | done | 40 portals in real worlds |
 | Mineshaft depth | approximate (placement exact) | M3 |
 | Spawn point, surface blocks, features (trees, cane, cacti, ores), carvers, full blocks | planned | M2 to M4 |
-| CUDA brute-force stage | planned | n/a |
+| CUDA pre-filter (structure placement, slime chunks) and crack brute force | done | GPU keeps exactly the CPU pre-check's seeds (2^20 seeds × 11 queries × 3 modes) |
 
 Each "verified" row means an oracle test that runs the actual 26.3 server classes passes with zero
 mismatches. See [docs/wiki/Accuracy.md](docs/wiki/Accuracy.md).
@@ -29,6 +31,7 @@ mismatches. See [docs/wiki/Accuracy.md](docs/wiki/Accuracy.md).
 ## Install (from source: Windows, Linux, macOS)
 
 Requires Python 3.10+, a Rust toolchain (`rustup`), and Java 21+ (only for the one-time data setup).
+Optional: the CUDA toolkit (`nvcc`) when building, for the GPU pre-filter on NVIDIA cards.
 
 ```sh
 python -m venv .venv
@@ -47,6 +50,7 @@ server jar from Mojang (sha1-checked), extracts worldgen JSON, tags and structur
 ```sh
 python -m sft search "village(within=200) and near('village', 'pillager_outpost', dist=120, within=600)" --count 2000000
 python -m sft search "biome('mushroom_fields', within=300) and monument(within=800)" --mode structure_seeds --count 100000
+python -m sft search "slime(radius=64) >= 14" --count 10G --gpu
 python -m sft search "maximize(island(biomes=['mushroom_fields'], within=3000))" --count 100000 --max 10
 python -m sft search "portal_frame(within=150) + loot('ruined_portal', 'obsidian', within=150) >= 10 and village(within=300)"
 python -m sft check 12345 "stronghold(within=1500)"
@@ -58,6 +62,7 @@ python -m sft crack swamp_hut:-1200,840 desert_pyramid:310,-560 pillager_outpost
 
 ## Documentation
 
+- [Getting started](docs/wiki/Getting-Started.md): the first search, step by step
 - [Wiki home](docs/wiki/Home.md): concepts and workflow
 - [Query language](docs/wiki/Query-Language.md): every condition and parameter
 - [Search modes and performance](docs/wiki/Search-Modes.md)

@@ -1,13 +1,18 @@
 # GUI guide
 
 Start with `python -m sft` (or `sft`). Every panel is a dock or splitter: resize, detach or close it.
+New here? Read [Getting started](Getting-Started.md) or take the tour (Help menu); it is offered
+the first time the window opens.
 
 ## Toolbar
 
 `version` (prepared data folders) · `mode` ([Search modes](Search-Modes.md)) · `start` · `count`
-(`10M`, `2^48`, ...) · `threads` · `max` (stop after N matches, 0 = unlimited) ·
-**Estimate** (time a sample, project total time and match rate) · **Start** (calibrates, then
-runs) · **Stop** · **Resume** (continue from the exact stop point) · **Export** · **Tools**:
+(`10M`, `2^48`, ...) · `threads` · `max` (stop after N matches, default 10,000, 0 = unlimited) ·
+**GPU** with its status: *CUDA compatible* (tick it to pre-filter on the graphics card) or *no
+CUDA* (hover for the reason; see [Search modes](Search-Modes.md#gpu-cuda)) ·
+**Estimate** (runs the search for 3 seconds and projects the total time and how rare matches are;
+Stop ends it early) · **Start** (starts at once) · **Stop** · **Resume** (continue from the exact
+stop point) · **Export** · **Tools**:
 - *Scan map seed for the query*: every place in the map's seed where the query matches, as numbered
   cyan pins and a list in the log ([Search modes](Search-Modes.md#one-seed-scan-loot-placement));
 - *Crack seed from structures*: structure coordinates in, matching seeds into the results table;
@@ -16,19 +21,30 @@ runs) · **Stop** · **Resume** (continue from the exact stop point) · **Export
 
 ## Query editor (left)
 
-- Buttons add `and` / `or` / `not` groups. **+ condition** adds any condition with sensible
-  defaults, grouped by structures, biomes, terrain, loot, scores and plugins. A new condition goes
-  into the selected group, next to the selected condition, or wraps a lone root in an `and`.
-  **delete** removes the selected node.
-- **presets** replaces the query with a ready-made one: speedrun filters (village plus portal,
-  near-complete portal frames, treasure diamonds, temple and close stronghold), witch-hut and
-  monument clusters, slime farms, mushroom islands, all-biome spawns, structure bingo and more.
-- Selecting a node shows its parameters. Edit values as Python literals (`300`, `'village'`,
-  `(0, 0)`, `['plains', 'meadow']`).
-- The text box below is the same query as text. Edits in either view update the other. Errors show
-  in red under the editor.
-- The reference list holds every structure (with its set; `~approx` where not exact) and every
-  biome. Double-click to insert the name at the text cursor.
+The query is a stack of blocks that read like sentences.
+
+- **Palette** (far left): every kind of block by category (logic, structures, biomes, terrain, loot,
+  scores, plugins). Drag one onto the canvas, into any group, or double-click it to add it at the
+  end. Hover for what it does.
+- **Canvas**: the top block, **ALL of these**, holds the query. Its dropdown switches between
+  **ALL** (every block inside must hold), **ANY** (at least one) and **NONE** (none of them). Groups
+  nest. Each block's sentence has its options in place: structure, biome and item dropdowns (type
+  to search), numbers, coordinates (`x 0 z 0` is spawn) and checkboxes. **more ▸** shows rarer
+  options (a structure's start biome and piece tags, sample spacing and height of biome checks, an
+  upper bound). A number left at its default is not written into the query.
+- Each block: **⠿** drags it (into another group, out of one, or to reorder), **⋮** deletes,
+  duplicates, wraps it in an ALL/ANY/NONE group, ungroups a group, or opens its help.
+  **+ add a condition** under a group adds a block from a menu.
+- **Rankings** (*scores*): *rank: highest first* and *rank: lowest first* hold one block whose
+  number ranks the seeds (`maximize`/`minimize`). *somewhere in an area* (`anywhere`) moves the
+  block inside to every spot of an area. *number comparison* takes an expression such as
+  `village(within=500) - pillager_outpost(within=500)`.
+- **✨ I want…** opens a wizard: pick a goal (a structure near spawn, two structures together,
+  farms, a biome, a big island, terrain, chest items, slime chunks, a speedrun filter, a record),
+  answer a few questions, and it adds the blocks (or replaces the query). **presets** loads
+  ready-made queries; **undo** reverts the last change; **clear** starts over.
+- Under the canvas, the query **as text** (the [query language](Query-Language.md)) and a summary
+  in plain words. Editing the text updates the blocks; errors show in red.
 
 ## Stats (top centre)
 
@@ -58,8 +74,15 @@ Letters: V village, P outpost, S stronghold, M monument, W mansion, A ancient ci
 chambers, R ruined portal, D desert pyramid, J jungle temple, H swamp hut, I igloo, s shipwreck,
 o ocean ruin, $ buried treasure, t trail ruins, c abandoned camp, m mineshaft.
 
+## Help
+
+**Help > Getting started** (F1) opens this wiki inside the app. The block menu's *help* entry jumps
+to that condition in the [query language](Query-Language.md). **Help > Take the tour** walks
+through the window again.
+
 ## Log / plugins (bottom)
 
-The log records estimates, starts and stops, re-checks and exports. The plugins tab lists each
+The log records estimates, starts and stops (and whether the GPU pre-filter is on), engine errors,
+re-checks and exports. The plugins tab lists each
 plugin, its native library, its Python module and any load error. Panels that plugins add appear as
 extra tabs here.

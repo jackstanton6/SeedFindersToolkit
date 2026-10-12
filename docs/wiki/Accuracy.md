@@ -19,6 +19,7 @@ the way the server loads them), dumps ground truth for random positions and seed
 | chest contents (`LootTable.fill`): items, counts, enchantments, damage, potions, stews, horns | 456 containers (incl. 9-slot dispensers), 19 tables | 0 mismatches |
 | structure chest loot seeds (buried treasure, shipwrecks, ruined portals, igloo basements, desert pyramids, ocean ruins, jungle temple chests and trap dispensers) | 250 containers, 4 real worlds | 0 mismatches |
 | ruined portal obsidian after aging (`portal_obsidian`, `portal_frame`) | 40 portals, 4 real worlds | 0 mismatches |
+| GPU pre-filter vs the CPU pre-check (`engine/tests/gpu.rs`) | 2^20 seeds × 11 queries × 3 modes | identical seed sets (outposts: superset, exclusion zones stay on the CPU) |
 
 Loot is checked against the official dedicated server, run headless under `cache/oracle-server`
 (you must accept the Minecraft EULA to run it). `tests/loot_oracle.py fill` places chests with

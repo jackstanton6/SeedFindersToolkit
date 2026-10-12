@@ -1,7 +1,7 @@
 # Query language
 
 A query is a Python-style expression. It is parsed (never executed) into the condition tree the
-engine evaluates. The GUI tree editor and the text box are two views of the same query.
+engine evaluates. The GUI's blocks and its text box are two views of the same query.
 
 ```python
 village(within=300) and (monument(within=800) or biome("mushroom_fields", within=500)) and not mansion(within=2000)

@@ -1,6 +1,6 @@
 # Seed Finders Toolkit wiki
 
-Pages: [Query language](Query-Language.md) · [Search modes](Search-Modes.md) · [GUI](GUI.md) ·
+Pages: [Getting started](Getting-Started.md) · [Query language](Query-Language.md) · [Search modes](Search-Modes.md) · [GUI](GUI.md) ·
 [Plugins](Plugins.md) · [Accuracy](Accuracy.md) · [Versions](Versions.md)
 
 ## Concepts you need
@@ -22,9 +22,9 @@ Pages: [Query language](Query-Language.md) · [Search modes](Search-Modes.md) ·
 ## Workflow
 
 1. `python -m sft data 26.3` once (downloads the official server jar, extracts worldgen data).
-2. Write a query: GUI tree/text editor, or the CLI. Start cheap: put placement-heavy conditions
+2. Write a query: GUI blocks (or the "I want..." wizard, or the text box), or the CLI. Start cheap: put placement-heavy conditions
    (structures, `near`) first and expensive ones (large-radius `biome`, `height`) after them.
-3. **Estimate.** Times a sample and projects the total run time and match rate. If the projected
+3. **Estimate.** Runs the search for 3 seconds and projects the total run time and match rate. If the projected
    match rate is tiny, switch to structure-seed mode (see [Search modes](Search-Modes.md)).
 4. **Start.** Watch rate, checks, prefilter pass, matches, elapsed and ETA. Stop at any time; Resume
    continues from the exact unit where it stopped.

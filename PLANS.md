@@ -216,7 +216,11 @@ Progress:
   10k; a hint when structure-seed mode cannot help.
 - [x] Jungle temple chest seeds: a constant number of moss-stone nextFloat draws (every block of
   every box, any chunk) before each container; chests + trap dispensers (9-slot fill), 8 real ones match.
-- [ ] CUDA: seed-only pre-filter (structure placement, slime) on the GPU, CPU verifies survivors;
-  GPU cracking brute force; GUI checkbox with a "CUDA compatible" status.
-- [ ] Block query builder (nested blocks, sentence-style fields) + wizard; text box stays in sync.
-- [ ] Help viewer (wiki pages in the app) and an optional first-start tour.
+- [x] CUDA: seed-only pre-filter (structure placement incl. all frequency reductions, slime) on the
+  GPU, CPU verifies survivors; GPU cracking brute force; GUI checkbox with a "CUDA compatible"
+  status; CLI `--gpu`. Kernel parity: identical seed sets to the CPU pre-check. Gains are large
+  only when the seed-only part is what limits a search (slime 8x, crack); biome checks stay on the
+  CPU, as agreed.
+- [x] Block query builder (nested blocks, sentence-style fields, palette, drag and drop, undo) +
+  "I want..." wizard (10 goals); text box and a plain-English summary stay in sync.
+- [x] Help viewer (wiki pages in the app, F1, per-block help) and an optional first-start tour.

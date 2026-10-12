@@ -19,11 +19,14 @@
 - **prefilter pass**: share of checks whose 48-bit placement pre-check passed.
 - **full evals**: seeds that got the full (biome/terrain/validity) evaluation.
 - **matches**: engine matches. **py rejected**: matches later dropped by `py(...)` conditions.
-- **est. total / est. rate**: from the calibration sample taken before each start (or Estimate).
-  **eta** is live, from the measured rate.
-- **match rate / 95% range / first match**: the rarity calculator. The calibration sample's
-  matches give the probability per unit with a 95% Wilson interval and the expected time to the
-  first match. With no match in the sample, "first match" is a lower bound (`> 00:12:00`).
+- **est. total / est. rate**: from **Estimate**, which runs the search itself for 3 seconds (Stop
+  ends it early) and extrapolates. In structure-seed mode the rate also accounts for the 65,536
+  sister checks each passing structure seed costs, which a 3-second window rarely sees in full.
+  **eta** is live, from the measured rate. Progress moves during sister expansion too.
+- **match rate / 95% range / first match**: the rarity calculator: matches per 64-bit seed with a
+  95% Wilson interval and the expected time to the next match. It updates live while the search
+  runs (Start no longer waits for a sample), and Estimate fills it before you start. With no match
+  yet, "first match" is a lower bound (`> 00:12:00`).
 - **kept**: rows in the results table (with `maximize`/`minimize`, the current top N).
 
 ## Choosing a mode
@@ -75,7 +78,8 @@ biomes), and observations of ancient cities, monuments and mansions help the fin
 the lifting.
 
 In the GUI: Tools, Crack seed from structures (one `name x z` per line, an optional
-`query: ...` line).
+`query: ...` line). With GPU ticked the brute force runs on the graphics card (268M seeds in about
+0.7 s on an RTX 5070 Ti, start-up included).
 
 ## Cost model (measured, 24-thread desktop, 26.3)
 
@@ -90,5 +94,30 @@ In the GUI: Tools, Crack seed from structures (one `name x z` per line, an optio
 Example: `village(within=200) and pillager_outpost(within=400)` runs at about 190k seeds/s in
 range mode, with every match fully validated.
 
-Threads default to all cores; lower it to keep the machine responsive. A CUDA brute-force stage for
-48-bit placement scans is planned (M4).
+Threads default to all cores; lower it to keep the machine responsive.
+
+## GPU (CUDA)
+
+With an NVIDIA GPU (compute capability 7.5 or newer, any recent driver) the toolbar shows **CUDA
+compatible**; tick **GPU** (CLI: `--gpu`). The GPU then runs the part of the query that depends on
+the seed alone, in batches of up to 16M seeds:
+
+- structure placement counts (`structure`, `loot`, `portal_*`, and `near`/`cluster` as necessary
+  conditions), including every frequency-reduction method of the vanilla sets;
+- slime chunks.
+
+Every seed the GPU passes still gets the exact CPU pre-check (exclusion zones such as outposts near
+villages) and the full check, so results are identical with and without it
+(`cargo test --release --test gpu -- --ignored` checks that the kernel keeps exactly the seeds the
+CPU keeps). Seed cracking brute-forces on the GPU too (`crack --gpu`, Tools menu with GPU ticked),
+with a work limit of 2^44 seeds instead of 2^38.
+
+What to expect (RTX 5070 Ti vs 24 CPU threads): the seed-only check runs at about 3.4 billion seeds/s
+against 190 million/s on the CPU. The whole search speeds up by the same factor only when nearly all
+seeds fail that check: `slime(radius=64) >= 12` goes from 59M to 496M seeds/s. When many seeds
+survive to biome and terrain checks, those dominate and the GPU changes little, and in structure-seed
+mode the 65,536 sister checks per surviving structure seed stay on the CPU.
+
+Building with GPU support needs the CUDA toolkit's `nvcc` when the engine is compiled (`pip install
+-e .` picks it up from `CUDA_PATH` or `PATH`); running needs only the NVIDIA driver. Without either,
+the checkbox stays off and says why.
