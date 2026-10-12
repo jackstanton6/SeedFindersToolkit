@@ -1,4 +1,4 @@
-"""Command line: `python -m sft [gui|data|search|check|locate|plugins]` (no command = GUI)."""
+"""Command line: `python -m sft [gui|data|search|check|scan|locate|crack|plugins]` (no command = GUI)."""
 import argparse
 import json
 import os
@@ -18,11 +18,20 @@ def fmt_secs(s) -> str:
 
 def cmd_search(a):
     seeds = [int(x) for x in open(a.seeds_file).read().split()] if a.seeds_file else None
+    if a.sisters is not None:
+        seeds = sft.sisters([a.sisters])
     job = sft.Job(a.version, a.query, "list" if seeds else a.mode, a.start, a.count, seeds, a.max)
+    run_job(job, a)
+
+
+def run_job(job, a):
     est = job.estimate(a.sample, a.threads)
     if "seconds_total" in est:
+        r = sft.rarity(est)
+        first = fmt_secs(r["seconds_to_first"]) if r["p"] else "> " + fmt_secs(r["seconds_to_first_range"][0])
         print(f"estimate: {est['units_per_sec']:,.0f} units/s, prefilter pass {est['prefilter_rate']:.2%}, "
-              f"total {fmt_secs(est['seconds_total'])}", file=sys.stderr)
+              f"total {fmt_secs(est['seconds_total'])}, match rate {r['p']:.3g} (95% {r['low']:.3g}..{r['high']:.3g}), "
+              f"first match in ~{first}", file=sys.stderr)
     job.start(a.threads, a.start_unit)
     try:
         while job.running():
@@ -38,6 +47,8 @@ def cmd_search(a):
     for seed, details in job.poll():
         print(seed, json.dumps(details) if a.details else "")
     print(f"\nstopped; resume with --start-unit {resume}" if resume < job.stats()["units_total"] else "\ndone", file=sys.stderr)
+    if job.ranked:
+        print("best:", *(f"{seed} ({sft.score(d):g})" for seed, d in job.rows), file=sys.stderr)
     if a.out:
         sft.export(job.rows, a.out)
 
@@ -50,6 +61,25 @@ def cmd_check(a):
         _, api = plugins.load(a.version)
         res = res if all(api.conditions[t["name"]](w, a.seed, **t.get("params", {})) for t in py_terms) else None
     print("match" if res is not None else "no match", res or "")
+
+
+def cmd_scan(a):
+    tree, _ = query.split_python(query.parse(a.query))
+    for x, z, details in sft.world(a.version).scan(a.seed, json.dumps(tree), a.x, a.z, a.within, a.step, a.anchor):
+        print(f"{x:8} {z:8}  {details if a.details else ''}")
+
+
+def cmd_crack(a):
+    obs = []
+    for o in a.observations:  # village:120,-340
+        name, _, xz = o.partition(":")
+        x, z = (int(v) for v in xz.split(","))
+        obs.append((name, x, z))
+    found, job = sft.crack(a.version, obs, a.query)
+    print(f"{len(found)} structure seed(s):", *found, file=sys.stderr)
+    if job:
+        print(f"checking {len(found) * 65536:,} sister seeds", file=sys.stderr)
+        run_job(job, a)
 
 
 def cmd_locate(a):
@@ -80,17 +110,34 @@ def main():
     s.add_argument("query")
     s.add_argument("--mode", default="range", choices=["range", "structure_seeds", "random"])
     s.add_argument("--start", type=int, default=0, help="first seed / structure seed / random generator seed")
-    s.add_argument("--start-unit", type=int, default=0, help="resume point printed by a stopped run")
     s.add_argument("--count", type=int, default=1_000_000)
     s.add_argument("--seeds-file", help="search these seeds (one per line) instead")
-    s.add_argument("--threads", type=int, default=os.cpu_count())
-    s.add_argument("--max", type=int, default=0, help="stop after this many matches")
-    s.add_argument("--sample", type=int, default=2048, help="units timed for the estimate")
-    s.add_argument("--details", action="store_true", help="print match details")
-    s.add_argument("--out", help="write results (.csv/.json/.txt)")
+    s.add_argument("--sisters", type=int, help="search the 65536 sister seeds of this seed instead")
+
+    def run_args(s):
+        s.add_argument("--threads", type=int, default=os.cpu_count())
+        s.add_argument("--max", type=int, default=0, help="stop after this many matches (best N with maximize)")
+        s.add_argument("--sample", type=int, default=2048, help="units timed for the estimate")
+        s.add_argument("--start-unit", type=int, default=0, help="resume point printed by a stopped run")
+        s.add_argument("--details", action="store_true", help="print match details")
+        s.add_argument("--out", help="write results (.csv/.json/.txt)")
+    run_args(s)
     c = sub.add_parser("check", help="evaluate a query on one seed")
     c.add_argument("seed", type=int)
     c.add_argument("query")
+    sc = sub.add_parser("scan", help="find every place in one seed where a query matches")
+    sc.add_argument("seed", type=int)
+    sc.add_argument("query", help="coordinates in the query are relative to each anchor")
+    sc.add_argument("--x", type=int, default=0)
+    sc.add_argument("--z", type=int, default=0)
+    sc.add_argument("--within", type=int, default=5000)
+    sc.add_argument("--step", type=int, default=64, help="anchor grid spacing in blocks")
+    sc.add_argument("--anchor", help="anchor at the starts of this structure instead of a grid")
+    sc.add_argument("--details", action="store_true")
+    cr = sub.add_parser("crack", help="find seeds from structures seen in a world")
+    cr.add_argument("observations", nargs="+", help="structure:x,z (block coordinates), e.g. swamp_hut:-120,840")
+    cr.add_argument("--query", default="", help="extra conditions the seed must meet (biomes, heights...)")
+    run_args(cr)
     lo = sub.add_parser("locate", help="list valid structure starts near a point")
     lo.add_argument("seed", type=int)
     lo.add_argument("structure")
@@ -106,7 +153,7 @@ def main():
     elif a.cmd == "data":
         print("data ready in", sft.data.setup(a.mc_version, a.jar))
     else:
-        {"search": cmd_search, "check": cmd_check, "locate": cmd_locate, "plugins": cmd_plugins}[a.cmd](a)
+        {"search": cmd_search, "check": cmd_check, "scan": cmd_scan, "locate": cmd_locate, "crack": cmd_crack, "plugins": cmd_plugins}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -102,6 +102,29 @@ class Job:
         return s
 
 
+def sisters(structure_seeds) -> list[int]:
+    """All 64-bit seeds sharing these low 48 bits (same structure placement, different biomes)."""
+    out = []
+    for s in structure_seeds:
+        low = s & (2**48 - 1)
+        out += [((hi << 48) | low) - (2**64 if hi >= 2**15 else 0) for hi in range(2**16)]
+    return out
+
+
+def observation_query(observations) -> str:
+    """DSL requiring each observed start [(structure, x, z)] within a chunk of where it was seen."""
+    return " and ".join(f"structure({n!r}, at=({x}, {z}), within=24)" for n, x, z in observations)
+
+
+def crack(version: str, observations, extra_query: str = "", max_work=2**38) -> tuple[list[int], "Job | None"]:
+    """Observed structure starts [(structure, x, z)] -> 48-bit structure seeds, plus a list Job over
+    their sisters checking every observation with biomes (and `extra_query`, e.g. biome or height
+    observations). Run the Job for the full 64-bit seeds."""
+    found = world(version).crack([(n, x, z) for n, x, z in observations], max_work)
+    q = " and ".join(t for t in (observation_query(observations), extra_query) if t)
+    return found, (Job(version, q, "list", seeds=sisters(found)) if found else None)
+
+
 def score(details: list) -> float:
     """The objective score stored in a match's details (0 if none)."""
     return next((d["value"] for d in details if d.get("type") == "score"), 0.0)

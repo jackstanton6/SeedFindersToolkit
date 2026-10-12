@@ -178,6 +178,17 @@ public class Oracle {
                 sb.append("]]");
             }
             sb.append(']');
+        } else if (mode.equals("slime")) {
+            // Slime.checkSlimeSpawnRules; far chunks exercise the int overflow in x*x*4987142
+            sb.append(",\"chunks\":[");
+            for (int i = 0; i < count; i++) {
+                int range = i % 2 == 0 ? 3_750_000 : 2_000;
+                int cx = rand.nextInt(range) - range / 2, cz = rand.nextInt(range) - range / 2;
+                boolean slime = net.minecraft.world.level.levelgen.WorldgenRandom.seedSlimeChunk(cx, cz, seed, 987234911L).nextInt(10) == 0;
+                if (i > 0) sb.append(',');
+                sb.append('[').append(cx).append(',').append(cz).append(',').append(slime).append(']');
+            }
+            sb.append(']');
         } else if (mode.equals("heights")) {
             sb.append(",\"heights\":[");
             for (int i = 0; i < count; i++) {

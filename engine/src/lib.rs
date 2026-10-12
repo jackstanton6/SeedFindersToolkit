@@ -4,6 +4,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains, clippy::needless_range_loop, clippy::manual_memcpy)]
 
 pub mod biome;
+pub mod crack;
 pub mod density;
 pub mod noise;
 pub mod rng;
@@ -160,7 +161,7 @@ mod py {
         }
 
         /// Every placement attempt of a structure/set within `radius` of (x, z), for heatmaps:
-        /// [(x, z, structure or "" if the start failed)]; failed attempts sit at the locate position.
+        /// [(x, z, structure or "" if the start failed)] at /locate positions (chunk corner + offset).
         fn attempts(&self, py: Python<'_>, seed: i64, name: &str, x: i32, z: i32, radius: i32) -> PyResult<Vec<(i32, i32, String)>> {
             let (set, only) = self.w.structures.resolve(name).ok_or_else(|| err(format!("unknown structure '{name}'")))?;
             let world = self.w.clone();
@@ -170,12 +171,10 @@ mod py {
                 let hits = ev.instances(set, only, (x, z), radius);
                 chunks
                     .into_iter()
-                    .map(|c| match hits.iter().find(|h| h.chunk == c) {
-                        Some(h) => (h.pos.0, h.pos.2, world.structures.structures[h.structure].name.clone()),
-                        None => {
-                            let p = query::locate(&world, set, c);
-                            (p.0, p.1, String::new())
-                        }
+                    .map(|c| {
+                        let p = query::locate(&world, set, c);
+                        let name = hits.iter().find(|h| h.chunk == c).map(|h| world.structures.structures[h.structure].name.clone());
+                        (p.0, p.1, name.unwrap_or_default())
                     })
                     .collect()
             }))
@@ -189,6 +188,26 @@ mod py {
             Ok(py.detach(move || {
                 seeds.par_iter().map(|&seed| Eval::new(&world, seed, &[]).instances(set, only, (x, z), radius).iter().map(|h| (h.pos.0, h.pos.2)).collect()).collect()
             }))
+        }
+
+        /// Structure-seed cracking from observed starts [(structure or set, block x, block z)]:
+        /// the 48-bit structure seeds placing all of them. Errors if more than `max_work` seeds
+        /// would have to be brute-forced (add observations of huts, temples, outposts, shipwrecks).
+        #[pyo3(signature = (observations, max_work=1u64 << 38))]
+        fn crack(&self, py: Python<'_>, observations: Vec<(String, i32, i32)>, max_work: u64) -> PyResult<Vec<i64>> {
+            let st = &self.w.structures;
+            let obs = observations
+                .iter()
+                .map(|(n, x, z)| Ok(crate::crack::Obs { set: st.resolve(n).ok_or_else(|| err(format!("unknown structure '{n}'")))?.0, chunk: (x >> 4, z >> 4) }))
+                .collect::<PyResult<Vec<_>>>()?;
+            let world = self.w.clone();
+            py.detach(move || {
+                let p = crate::crack::plan(&world.structures, &obs).map_err(err)?;
+                if p.work > max_work {
+                    return Err(err(format!("{} seeds to brute-force (limit {max_work}); add more observations", p.work)));
+                }
+                Ok(crate::crack::run(&world.structures, &p, &std::sync::atomic::AtomicBool::new(false), &std::sync::atomic::AtomicU64::new(0)))
+            })
         }
     }
 

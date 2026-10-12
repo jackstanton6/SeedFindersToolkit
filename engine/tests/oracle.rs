@@ -177,6 +177,18 @@ fn piece_details_match() {
 
 #[test]
 #[ignore]
+fn slime_chunks_match() {
+    for f in fixtures("slime") {
+        let seed = f["seed"].as_i64().unwrap();
+        for c in f["chunks"].as_array().unwrap() {
+            let (x, z) = (c[0].as_i64().unwrap() as i32, c[1].as_i64().unwrap() as i32);
+            assert_eq!(sft_engine::query::is_slime_chunk(seed, x, z), c[2].as_bool().unwrap(), "seed {seed} chunk ({x},{z})");
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn heights_match() {
     let w = world();
     for f in fixtures("heights") {
