@@ -1,6 +1,7 @@
 """Seed Finders Toolkit: shared entry points for the CLI, the GUI and plugins."""
 import csv
 import json
+import math
 import os
 from pathlib import Path
 
@@ -50,12 +51,15 @@ class Job:
         for t in self.py_terms:
             if t["name"] not in self.api.conditions:
                 raise query.QueryError(f"unknown python condition '{t['name']}' (is its plugin loaded?)")
+        used = {n.get("plugin") for n in query.nodes(engine_tree) if n["op"] == "native"}
         self.search = engine().Search(
             self.world, json.dumps(engine_tree or {"op": "and", "args": []}), mode, start, count,
-            seeds, plugins.natives(plugin_list), max_results,
+            seeds, [n for n in plugins.natives(plugin_list) if n[0] in used], max_results,
         )
         self.rows: list[tuple[int, list]] = []
         self.py_rejected = 0
+        # maximize()/minimize(): rows are the best `keep` seeds by score, best first
+        self.ranked, self.keep = self.search.ranked, max_results or 100
 
     def estimate(self, sample=4096, threads=None) -> dict:
         return json.loads(self.search.estimate(sample, threads or os.cpu_count()))
@@ -76,12 +80,15 @@ class Job:
     def poll(self) -> list[tuple[int, list]]:
         """New matches since the last poll, after py(...) filters."""
         new = []
-        for seed, details in self.search.take_results():
+        for seed, details, sc in self.search.take_results():
             if all(self.api.conditions[t["name"]](self.world, seed, **t.get("params", {})) for t in self.py_terms):
-                new.append((seed, json.loads(details)))
+                d = json.loads(details)
+                new.append((seed, d + [{"type": "score", "value": sc}] if self.ranked else d))
             else:
                 self.py_rejected += 1
         self.rows += new
+        if self.ranked:
+            self.rows = sorted(self.rows, key=lambda r: -score(r[1]))[: self.keep]
         return new
 
     def stats(self) -> dict:
@@ -93,6 +100,25 @@ class Job:
         s["eta"] = (total - done) / s["rate"] if s["rate"] > 0 else None
         s["py_rejected"] = self.py_rejected
         return s
+
+
+def score(details: list) -> float:
+    """The objective score stored in a match's details (0 if none)."""
+    return next((d["value"] for d in details if d.get("type") == "score"), 0.0)
+
+
+def rarity(est: dict, z: float = 1.96) -> dict:
+    """Match probability per unit with a 95% Wilson interval, and the expected time to the first
+    match, from an estimate() calibration sample."""
+    n, k = est.get("sample", 0), est.get("matches", 0)
+    if not n:
+        return {}
+    p = k / n
+    centre, half = (p + z * z / (2 * n)) / (1 + z * z / n), z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    lo, hi = max(0.0, centre - half), min(1.0, centre + half)
+    rate = est.get("units_per_sec", 0)
+    first = (lambda q: 1 / (q * rate) if q > 0 and rate > 0 else math.inf)
+    return {"p": p, "low": lo, "high": hi, "seconds_to_first": first(p), "seconds_to_first_range": (first(hi), first(lo))}
 
 
 def export(rows, path: str | Path):

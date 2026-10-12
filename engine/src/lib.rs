@@ -7,6 +7,7 @@ pub mod biome;
 pub mod density;
 pub mod noise;
 pub mod rng;
+pub mod query;
 pub mod search;
 pub mod structure;
 pub mod world;
@@ -14,7 +15,8 @@ pub mod world;
 /// Python bindings (`sft._engine`), built by maturin with `--features python`.
 #[cfg(feature = "python")]
 mod py {
-    use crate::search::{self, Eval, Mode, Search};
+    use crate::query::{self, Eval};
+    use crate::search::{self, Mode, Search};
     use crate::world::{BiomeCtx, Heightmap, Seeded, World};
     use pyo3::exceptions::{PyRuntimeError, PyValueError};
     use pyo3::prelude::*;
@@ -126,12 +128,74 @@ mod py {
             }))
         }
 
-        /// Evaluates a query for one seed: details JSON if it matches, else None.
+        /// Evaluates a query for one seed: details JSON if it matches, else None. Queries with an
+        /// objective get a trailing {"type": "score"} entry.
         fn check(&self, seed: i64, query: &str) -> PyResult<Option<String>> {
-            let q: Value = serde_json::from_str(query).map_err(|e| err(e.to_string()))?;
-            let cond = search::parse(&self.w, &[], &q).map_err(err)?;
+            let cond = self.parse(query)?;
             let mut ev = Eval::new(&self.w, seed, &[]);
-            Ok(ev.eval(&cond).then(|| Value::Array(ev.details).to_string()))
+            if !ev.eval(&cond) {
+                return Ok(None);
+            }
+            if cond.has_objective() {
+                ev.details.push(serde_json::json!({"type": "score", "value": ev.score}));
+            }
+            Ok(Some(Value::Array(ev.details).to_string()))
+        }
+
+        /// Single-seed scan: every anchor within `within` of (x, z) where the query, moved there,
+        /// matches. Anchors are grid points `step` apart, or the starts of `anchor` structures.
+        /// Returns [(x, z, details JSON)], nearest first.
+        #[pyo3(signature = (seed, query, x, z, within, step=64, anchor=None))]
+        #[allow(clippy::too_many_arguments)]
+        fn scan(&self, py: Python<'_>, seed: i64, query: &str, x: i32, z: i32, within: i32, step: i32, anchor: Option<String>) -> PyResult<Vec<(i32, i32, String)>> {
+            let cond = self.parse(query)?;
+            let sel = anchor.map(|a| query::parse_sel(&self.w, &serde_json::json!({"name": a}))).transpose().map_err(err)?;
+            let world = self.w.clone();
+            Ok(py.detach(move || {
+                query::scan(&world, &[], seed, &cond, (x, z), within, step.max(1), sel.as_ref())
+                    .into_iter()
+                    .map(|(p, d)| (p.0, p.1, Value::Array(d).to_string()))
+                    .collect()
+            }))
+        }
+
+        /// Every placement attempt of a structure/set within `radius` of (x, z), for heatmaps:
+        /// [(x, z, structure or "" if the start failed)]; failed attempts sit at the locate position.
+        fn attempts(&self, py: Python<'_>, seed: i64, name: &str, x: i32, z: i32, radius: i32) -> PyResult<Vec<(i32, i32, String)>> {
+            let (set, only) = self.w.structures.resolve(name).ok_or_else(|| err(format!("unknown structure '{name}'")))?;
+            let world = self.w.clone();
+            Ok(py.detach(move || {
+                let mut ev = Eval::new(&world, seed, &[]);
+                let chunks = ev.attempts(set, (x, z), radius);
+                let hits = ev.instances(set, only, (x, z), radius);
+                chunks
+                    .into_iter()
+                    .map(|c| match hits.iter().find(|h| h.chunk == c) {
+                        Some(h) => (h.pos.0, h.pos.2, world.structures.structures[h.structure].name.clone()),
+                        None => {
+                            let p = query::locate(&world, set, c);
+                            (p.0, p.1, String::new())
+                        }
+                    })
+                    .collect()
+            }))
+        }
+
+        /// Valid starts of a structure/set within `radius` of (x, z) for many seeds, in parallel:
+        /// one [(x, z)] list per seed (placement statistics, probability heatmaps).
+        fn placement_stats(&self, py: Python<'_>, name: &str, x: i32, z: i32, radius: i32, seeds: Vec<i64>) -> PyResult<Vec<Vec<(i32, i32)>>> {
+            let (set, only) = self.w.structures.resolve(name).ok_or_else(|| err(format!("unknown structure '{name}'")))?;
+            let world = self.w.clone();
+            Ok(py.detach(move || {
+                seeds.par_iter().map(|&seed| Eval::new(&world, seed, &[]).instances(set, only, (x, z), radius).iter().map(|h| (h.pos.0, h.pos.2)).collect()).collect()
+            }))
+        }
+    }
+
+    impl PyWorld {
+        fn parse(&self, query: &str) -> PyResult<query::Cond> {
+            let q: Value = serde_json::from_str(query).map_err(|e| err(e.to_string()))?;
+            query::parse(&self.w, &[], &q).map_err(err)
         }
     }
 
@@ -226,12 +290,18 @@ mod py {
             ])
         }
 
-        /// Drains matches found since the last call: [(seed, details JSON)].
-        fn take_results(&self) -> Vec<(i64, String)> {
+        /// Drains matches found since the last call: [(seed, details JSON, score)].
+        fn take_results(&self) -> Vec<(i64, String, f64)> {
             std::mem::take(&mut *self.inner.results.lock().unwrap())
                 .into_iter()
-                .map(|m| (m.seed, Value::Array(m.details).to_string()))
+                .map(|m| (m.seed, Value::Array(m.details).to_string(), m.score))
                 .collect()
+        }
+
+        /// True when the query has maximize()/minimize(): results are the best `max_results`.
+        #[getter]
+        fn ranked(&self) -> bool {
+            self.inner.cond.has_objective()
         }
     }
 
@@ -241,7 +311,7 @@ mod py {
         m.add_class::<PyWorld>()?;
         m.add_class::<PySearch>()?;
         m.add("PLUGIN_ABI", search::ABI_VERSION)?;
-        m.add("CLIMATE_PARAMS", search::CLIMATE_PARAMS.to_vec())?;
+        m.add("CLIMATE_PARAMS", query::CLIMATE_PARAMS.to_vec())?;
         Ok(())
     }
 }
