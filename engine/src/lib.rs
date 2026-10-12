@@ -6,6 +6,7 @@
 pub mod biome;
 pub mod crack;
 pub mod density;
+pub mod loot;
 pub mod noise;
 pub mod rng;
 pub mod query;
@@ -188,6 +189,13 @@ mod py {
             Ok(py.detach(move || {
                 seeds.par_iter().map(|&seed| Eval::new(&world, seed, &[]).instances(set, only, (x, z), radius).iter().map(|h| (h.pos.0, h.pos.2)).collect()).collect()
             }))
+        }
+
+        /// LootTable.fill of an empty chest: 27 slots, each None or {"item", "count", ...} (JSON).
+        fn loot(&self, table: &str, seed: i64) -> PyResult<String> {
+            let loot = self.w.loot.as_ref().map_err(|e| err(e.clone()))?;
+            let chest = loot.fill(&crate::density::ns(table), seed, None).map_err(err)?;
+            Ok(Value::Array(chest.iter().map(|s| s.as_ref().map_or(Value::Null, |s| s.to_json())).collect()).to_string())
         }
 
         /// Structure-seed cracking from observed starts [(structure or set, block x, block z)]:

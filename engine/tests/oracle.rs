@@ -175,6 +175,43 @@ fn piece_details_match() {
     eprintln!("{checked} piece rows checked");
 }
 
+/// Chest contents from the real server (tests/loot_oracle.py fill): chests placed with explicit
+/// seeds and unpacked. Maps are compared by item only.
+#[test]
+#[ignore]
+fn loot_fill_matches() {
+    let w = world();
+    let loot = w.loot.as_ref().expect("loot data");
+    let cases: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(root().join("cache/oracle/loot-fill.json")).expect("run tests/loot_oracle.py fill")).unwrap();
+    let mut bad = 0;
+    for c in &cases {
+        let (table, seed) = (c["table"].as_str().unwrap(), c["seed"].as_i64().unwrap());
+        let got: Vec<Value> = loot
+            .fill(table, seed, None)
+            .unwrap()
+            .into_iter()
+            .map(|s| {
+                s.map_or(Value::Null, |mut s| {
+                    s.enchants.sort();
+                    // defaults are not saved: damage 0, the goat horn's own instrument
+                    s.extra.retain(|e| !e.starts_with("map:") && e != "damage:0" && e != "instrument:minecraft:ponder_goat_horn");
+                    s.extra.sort();
+                    s.to_json()
+                })
+            })
+            .collect();
+        let want = c["slots"].as_array().unwrap();
+        if got != *want {
+            if bad < 3 {
+                let diff: Vec<_> = (0..27).filter(|&i| got[i] != want[i]).map(|i| format!("slot {i}: got {} want {}", got[i], want[i])).collect();
+                eprintln!("{table} seed {seed}:\n  {}", diff.join("\n  "));
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad}/{} chests differ", cases.len());
+}
+
 #[test]
 #[ignore]
 fn slime_chunks_match() {

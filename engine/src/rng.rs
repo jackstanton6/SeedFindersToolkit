@@ -221,6 +221,70 @@ impl Rng for JavaRandom {
     }
 }
 
+/// WorldgenRandom(XoroshiroRandomSource): the 26.x decoration random (features, structure
+/// postProcess). Java-random methods (BitRandomSource) over `next(bits)` = top bits of nextLong.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldgenXoro(Xoroshiro);
+
+impl WorldgenXoro {
+    pub fn new(seed: i64) -> Self {
+        WorldgenXoro(Xoroshiro::new(seed))
+    }
+    pub fn set_seed(&mut self, seed: i64) {
+        self.0 = Xoroshiro::new(seed);
+    }
+    fn next(&mut self, bits: u32) -> i32 {
+        self.0.next_bits(bits) as i32
+    }
+    /// setDecorationSeed(world seed, chunk min block x, chunk min block z)
+    pub fn set_decoration_seed(&mut self, world_seed: i64, x: i32, z: i32) -> i64 {
+        self.set_seed(world_seed);
+        let xs = self.next_long() | 1;
+        let zs = self.next_long() | 1;
+        let r = (x as i64).wrapping_mul(xs).wrapping_add((z as i64).wrapping_mul(zs)) ^ world_seed;
+        self.set_seed(r);
+        r
+    }
+    pub fn set_feature_seed(&mut self, decoration_seed: i64, index: i32, step: i32) {
+        self.set_seed(decoration_seed.wrapping_add(index as i64).wrapping_add(10000 * step as i64));
+    }
+}
+
+impl Rng for WorldgenXoro {
+    fn next_int(&mut self) -> i32 {
+        self.next(32)
+    }
+    fn next_bound(&mut self, bound: i32) -> i32 {
+        if bound & (bound - 1) == 0 {
+            return ((bound as i64 * self.next(31) as i64) >> 31) as i32;
+        }
+        loop {
+            let sample = self.next(31);
+            let modulo = sample % bound;
+            if sample.wrapping_sub(modulo).wrapping_add(bound - 1) >= 0 {
+                return modulo;
+            }
+        }
+    }
+    fn next_long(&mut self) -> i64 {
+        let hi = self.next(32) as i64;
+        let lo = self.next(32) as i64;
+        (hi << 32).wrapping_add(lo)
+    }
+    fn next_float(&mut self) -> f32 {
+        self.next(24) as f32 * 5.960_464_5e-8
+    }
+    fn next_double(&mut self) -> f64 {
+        let hi = self.next(26) as i64;
+        let lo = self.next(27) as i64;
+        // BitRandomSource multiplies by the float literal 1.110223E-16F
+        ((hi << 27) + lo) as f64 * 1.110_223e-16_f32 as f64
+    }
+    fn next_bool(&mut self) -> bool {
+        self.next(1) != 0
+    }
+}
+
 /// Either kind of random source, for code paths that support both algorithms.
 #[derive(Clone, Copy, Debug)]
 pub enum AnyRng {

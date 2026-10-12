@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 KEEP = ("data/minecraft/worldgen/", "data/minecraft/tags/worldgen/", "data/minecraft/structure/", "data/minecraft/loot_table/",
-        "data/minecraft/enchantment/", "data/minecraft/tags/item/", "data/minecraft/tags/enchantment/")
+        "data/minecraft/enchantment/", "data/minecraft/tags/item/", "data/minecraft/tags/enchantment/", "data/minecraft/tags/instrument/")
 
 
 def data_dir(version: str) -> Path:
@@ -72,11 +72,12 @@ def extract(version: str, server_jar: Path) -> None:
 
 
 def write_items(report: Path, dest: Path) -> None:
-    """item id -> [max stack size, enchantability (0 = not enchantable)], what loot generation needs."""
+    """item id -> [max stack size, enchantability (0 = none), max damage (0 = none)] for loot generation."""
     items = {}
     for f in sorted(report.glob("*.json")):
         c = json.loads(f.read_text())["components"]
-        items[f"minecraft:{f.stem}"] = [c.get("minecraft:max_stack_size", 64), c.get("minecraft:enchantable", {}).get("value", 0)]
+        items[f"minecraft:{f.stem}"] = [c.get("minecraft:max_stack_size", 64), c.get("minecraft:enchantable", {}).get("value", 0),
+                                         c.get("minecraft:max_damage", 0)]
     dest.write_text(json.dumps(items, separators=(",", ":")))
 
 

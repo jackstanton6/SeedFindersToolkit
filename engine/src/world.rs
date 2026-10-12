@@ -51,6 +51,8 @@ pub struct World {
     pub biomes: Biomes,
     pub climate: Climate,
     pub structures: crate::structure::Structures,
+    /// Chest loot tables; Err (with the reason) when the data folder predates loot extraction.
+    pub loot: Result<crate::loot::Loot, String>,
 }
 
 impl World {
@@ -95,6 +97,7 @@ impl World {
         let mut structures = crate::structure::Structures::load(dir, &biomes)?;
         structures.mark_possible(climate.possible());
         Ok(World {
+            loot: crate::loot::Loot::load(dir),
             version: std::fs::read_to_string(dir.join("version.txt")).unwrap_or_default().trim().to_string(),
             dir: dir.to_path_buf(),
             defs,
