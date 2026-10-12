@@ -17,3 +17,5 @@
   then extend `oracle/Oracle.java` with a dump mode for it and add a parity test. "Looks right" is
   not verification; the oracle is.
 - Keep diffs small and in the style of the surrounding code (short comments, no extra abstraction).
+- Before making changes, ask the user a series of clarifying questions to ensure you provide the best
+  possible solution. Ask at least four.
