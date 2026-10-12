@@ -202,6 +202,9 @@ impl Search {
                 top.truncate(self.max_results.min(usize::MAX as u64) as usize);
             } else if n >= self.max_results {
                 self.stop.store(true, Relaxed);
+                if n > self.max_results {
+                    return;
+                }
             }
             self.results.lock().unwrap().push(Match { seed, details: ev.details, score: ev.score });
         }

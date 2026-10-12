@@ -1,97 +1,26 @@
-"""Main window: query editor (tree + DSL), search controls, live stats, results, map, plugins."""
-import ast
+"""Main window: block query editor (+ DSL text), search controls, live stats, results, map, plugins, help."""
 import json
 import os
 import sys
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QPalette
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
-    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget,
+    QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter,
+    QTableWidget, QTableWidgetItem, QTabWidget, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 import sft
 from sft import plugins, query
+from sft.gui.blocks import PRESETS, BlockEditor  # noqa: F401  (PRESETS kept importable from here)
+from sft.gui.help import HelpWindow, Tour
 from sft.gui.mapview import DEFAULT_SETS, MapView
+from sft.gui.wizard import Wizard
 
 MONO = QFont("Consolas", 9)
-_COUNT = {"op": "structure", "name": "village", "within": 1000}
-TEMPLATES = {  # category -> condition -> default node (without "op")
-    "structures": {
-        "structure": {"name": "village", "within": 500},
-        "nearest": {"name": "stronghold", "within": 3000, "max": 1500},
-        "near": {"a": "village", "b": "pillager_outpost", "dist": 150, "within": 1000},
-        "cluster": {"names": "swamp_hut", "count": 3, "dist": 128, "within": 5000, "afk": True},
-        "chain": {"names": ["village", "pillager_outpost", "village"], "dist": 400, "within": 2000},
-        "overlap": {"a": "village", "b": "pillager_outpost", "within": 3000, "margin": 0},
-        "bingo": {"within": 1500, "min": 12},
-    },
-    "biomes": {
-        "biome": {"name": "mushroom_fields", "within": 500, "y": 64, "step": 16},
-        "biome_area": {"name": "mushroom_fields", "within": 2000, "window": 1024, "step": 32, "min": 100000},
-        "biome_count": {"within": 1000, "step": 32, "min": 20},
-        "biome_border": {"a": "desert", "b": "snowy_plains", "within": 2000, "step": 32},
-        "island": {"within": 3000, "window": 1024, "step": 32, "min_circularity": 0.5, "min": 50000},
-    },
-    "terrain": {
-        "climate": {"param": "continentalness", "at": [0, 0], "y": 64, "min": 0.5},
-        "height": {"at": [0, 0], "min": 120},
-        "peak": {"within": 500, "step": 32, "min": 250},
-        "trench": {"within": 1000, "step": 32, "max": -20},
-        "cliff": {"within": 300, "step": 8, "min": 40},
-        "overhang": {"within": 200, "step": 16, "min": 20},
-        "void": {"within": 64, "step": 16, "min": 30},
-        "lake": {"fluid": "lava", "within": 200, "step": 16, "min": 10},
-        "slime": {"radius": 128, "within": 300, "min": 14},
-    },
-    "loot": {
-        "loot": {"name": "buried_treasure", "item": "diamond", "within": 500, "min": 2},
-        "portal_frame": {"within": 300, "min": 8},
-        "portal_obsidian": {"within": 300, "min": 10},
-    },
-    "scores": {
-        "maximize": {"expr": _COUNT},
-        "minimize": {"expr": {"op": "nearest", "name": "stronghold", "within": 3000}},
-        "cmp": {"expr": {"op": "sub", "a": _COUNT, "b": {**_COUNT, "name": "pillager_outpost"}}, "min": 2},
-        "anywhere": {"cond": {"op": "slime", "radius": 24, "min": 5}, "within": 1000, "step": 32},
-    },
-    "plugins": {
-        "native": {"plugin": "example_rust", "filter": "spawn_island", "params": {}},
-        "py": {"name": "example_python.seed_contains", "params": {"text": "777"}},
-    },
-}
-DEFAULTS = {op: node for group in TEMPLATES.values() for op, node in group.items()}
-PRESETS = {  # ready-made queries (overworld speedrun parts and common hunts)
-    "speedrun: village + ruined portal at spawn": "village(within=160) and ruined_portal(within=160, tags=['placement:on_land_surface'])",
-    "speedrun: near-complete portal frame": "portal_frame(within=200) >= 8 and village(within=300)",
-    "speedrun: portal + chest obsidian completes the frame": "portal_frame(within=150) + loot('ruined_portal', 'obsidian', within=150) >= 10",
-    "speedrun: portal chest with flint and steel": "loot('ruined_portal', 'flint_and_steel', within=200) and village(within=300)",
-    "speedrun: buried treasure with diamonds": "loot('buried_treasure', 'diamond', within=300) >= 2",
-    "speedrun: shipwreck iron": "loot('shipwreck', 'iron_ingot', within=200, total=True) >= 8",
-    "enchanted golden apple in a desert temple": "loot('desert_pyramid', 'enchanted_golden_apple', within=2000)",
-    "speedrun: shipwreck + buried treasure at spawn": "shipwreck(within=200, tags=['chest:']) and buried_treasure(within=200)",
-    "speedrun: desert temple + village": "desert_pyramid(within=200) and village(within=300)",
-    "speedrun: close stronghold": "nearest('stronghold', within=2000) < 1450 and village(within=300)",
-    "quad witch huts (AFK spot)": "cluster('swamp_hut', count=4, dist=128, within=20000, afk=True)",
-    "triple witch huts": "cluster('swamp_hut', count=3, dist=128, within=10000, afk=True)",
-    "double ocean monument": "cluster('monument', count=2, dist=128, within=10000, afk=True)",
-    "slime farm (top ~1%)": "slime(radius=128, within=300) >= 37",
-    "mushroom island near spawn": "island(biomes=['mushroom_fields'], within=1500, window=1024)",
-    "biggest mushroom island (record)": "maximize(island(biomes=['mushroom_fields'], within=3000, window=1500))",
-    "almost every biome near spawn": "biome_count(within=3000, step=32) >= 54",
-    "structure bingo": "bingo(within=1500) >= 14",
-    "desert temple inside a village": "overlap('desert_pyramid', 'village', within=3000)",
-    "stronghold under a village": "near('stronghold', 'village', dist=96, within=3000)",
-    "all three ring-1 strongholds close to spawn": "stronghold(within=1800) >= 3",
-    "basement igloo near spawn": "igloo(within=600, tags=['basement'])",
-    "ocean ruin cluster near spawn": "ocean_ruin(within=500, tags=['cluster'])",
-}
-GROUPS = ("and", "or", "not")
 MAX_TABLE_ROWS = 200_000
 
 
@@ -129,183 +58,10 @@ def summary(details: list) -> str:
     return ", ".join(one(d) for d in details if "x" in d)[:300]
 
 
-class QueryEditor(QWidget):
-    """Condition tree and DSL text kept in sync; leaf parameters are edited as Python literals.
-    The text is the source of truth for searches."""
-
-    def __init__(self):
-        super().__init__()
-        self._syncing = False
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["condition", "as text"])
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.currentItemChanged.connect(self._show_params)
-        self.params = QTableWidget(0, 2)
-        self.params.setHorizontalHeaderLabels(["parameter", "value (python literal)"])
-        self.params.horizontalHeader().setStretchLastSection(True)
-        self.params.itemChanged.connect(self._param_edited)
-        self.text = QPlainTextEdit()
-        self.text.setFont(MONO)
-        self.text.setPlaceholderText("village(within=300) and biome('#is_jungle', within=400)")
-        self._text_timer = QTimer(self, singleShot=True, interval=350, timeout=self._text_to_tree)
-        self.text.textChanged.connect(lambda: self._syncing or self._text_timer.start())
-        self.error = QLabel()
-        self.error.setStyleSheet("color: #ff8080")
-        self.error.setWordWrap(True)
-        self.reference = QListWidget()
-        self.reference.setFont(MONO)
-        self.reference.setToolTip("double-click to insert at the cursor")
-        self.reference.itemDoubleClicked.connect(lambda it: self.text.insertPlainText(repr(it.data(Qt.ItemDataRole.UserRole))))
-
-        buttons = QHBoxLayout()
-        for op in GROUPS:
-            buttons.addWidget(QToolButton(text=op, clicked=lambda _=False, o=op: self.add(o)))
-        for title, items in (("+ condition", None), ("presets", PRESETS)):
-            b = QToolButton(text=title, popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
-            m = QMenu(b)
-            if items is None:
-                for cat, ops in TEMPLATES.items():
-                    sub = m.addMenu(cat)
-                    for op in ops:
-                        sub.addAction(op, lambda o=op: self.add(o))
-            else:
-                for name, text in items.items():
-                    m.addAction(name, lambda t=text: self.set_text(t))
-            b.setMenu(m)
-            buttons.addWidget(b)
-        buttons.addWidget(QToolButton(text="delete", clicked=self.delete))
-        buttons.addStretch()
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(2, 2, 2, 2)
-        lay.addLayout(buttons)
-        split = QSplitter(Qt.Orientation.Vertical)
-        for w in (self.tree, self.params, self.text, self.reference):
-            split.addWidget(w)
-        split.setSizes([260, 140, 90, 160])
-        lay.addWidget(split)
-        lay.addWidget(self.error)
-
-    def fill_reference(self, world):
-        self.reference.clear()
-        rows = [(f"structure  {n.split(':')[-1]:30} set {s.split(':')[-1]}{'' if exact else '  ~approx'}", n.split(":")[-1])
-                for n, s, exact, possible in sorted(world.structures()) if possible]
-        rows += [(f"biome      {b.split(':')[-1]}", b.split(":")[-1]) for b in world.biomes()]
-        for label, value in rows:
-            self.reference.addItem(label)
-            self.reference.item(self.reference.count() - 1).setData(Qt.ItemDataRole.UserRole, value)
-
-    # tree <-> dict
-    def _item(self, node: dict) -> QTreeWidgetItem:
-        it = QTreeWidgetItem([node["op"], "" if node["op"] in GROUPS else query.to_text(node)])
-        it.setData(0, Qt.ItemDataRole.UserRole, {k: v for k, v in node.items() if k not in ("args", "arg")})
-        for c in node.get("args", []) + ([node["arg"]] if "arg" in node else []):
-            it.addChild(self._item(c))
-        it.setExpanded(True)
-        return it
-
-    def _node(self, it: QTreeWidgetItem) -> dict:
-        node = dict(it.data(0, Qt.ItemDataRole.UserRole))
-        kids = [self._node(it.child(i)) for i in range(it.childCount())]
-        if node["op"] in ("and", "or"):
-            node["args"] = kids
-        elif node["op"] == "not":
-            if len(kids) != 1:
-                raise query.QueryError("'not' needs exactly one child")
-            node["arg"] = kids[0]
-        return node
-
-    def query(self) -> dict:
-        return query.parse(self.text.toPlainText())
-
-    def set_text(self, text: str):
-        self.text.setPlainText(text)
-        self._text_to_tree()
-
-    def _text_to_tree(self):
-        try:
-            node = query.parse(self.text.toPlainText()) if self.text.toPlainText().strip() else None
-            self.error.setText("")
-        except query.QueryError as e:
-            self.error.setText(str(e))
-            return
-        self.tree.clear()
-        if node:
-            self.tree.addTopLevelItem(self._item(node))
-
-    def _tree_to_text(self):
-        top = self.tree.topLevelItem(0)
-        try:
-            node = self._node(top) if top else None
-            self.error.setText("")
-        except query.QueryError as e:
-            self.error.setText(str(e))
-            return
-        self._syncing = True
-        self.text.setPlainText(query.to_text(node) if node else "")
-        self._syncing = False
-
-    def _wrap_root(self, extra: QTreeWidgetItem):
-        top = self.tree.takeTopLevelItem(0)
-        root = self._item({"op": "and", "args": []})
-        root.addChild(top)
-        root.addChild(extra)
-        self.tree.addTopLevelItem(root)
-
-    def add(self, op: str):
-        it = self._item({"op": op, **json.loads(json.dumps(DEFAULTS.get(op, {})))})
-        cur = self.tree.currentItem()
-        if self.tree.topLevelItem(0) is None:
-            self.tree.addTopLevelItem(it)
-        elif cur is None or (cur.parent() is None and cur.data(0, Qt.ItemDataRole.UserRole)["op"] not in GROUPS):
-            self._wrap_root(it)  # adding next to a lone root condition makes an AND
-        elif cur.data(0, Qt.ItemDataRole.UserRole)["op"] in GROUPS:
-            cur.addChild(it)
-        else:
-            cur.parent().addChild(it)
-        self.tree.setCurrentItem(it)
-        self._tree_to_text()
-
-    def delete(self):
-        cur = self.tree.currentItem()
-        if cur is not None:
-            (cur.parent() or self.tree.invisibleRootItem()).removeChild(cur)
-            self._tree_to_text()
-
-    def _show_params(self, cur, _prev=None):
-        self._syncing = True
-        self.params.setRowCount(0)
-        for k, v in (cur.data(0, Qt.ItemDataRole.UserRole).items() if cur else []):
-            if k == "op":
-                continue
-            r = self.params.rowCount()
-            self.params.insertRow(r)
-            key = QTableWidgetItem(k)
-            key.setFlags(key.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.params.setItem(r, 0, key)
-            self.params.setItem(r, 1, QTableWidgetItem(repr(tuple(v) if isinstance(v, list) and len(v) == 2 else v)))
-        self._syncing = False
-
-    def _param_edited(self, item):
-        if self._syncing or item.column() != 1:
-            return
-        cur = self.tree.currentItem()
-        node = dict(cur.data(0, Qt.ItemDataRole.UserRole))
-        key = self.params.item(item.row(), 0).text()
-        try:
-            v = ast.literal_eval(item.text())
-        except (ValueError, SyntaxError):
-            self.error.setText(f"{key}: not a python literal")
-            return
-        node[key] = list(v) if isinstance(v, tuple) else v
-        cur.setData(0, Qt.ItemDataRole.UserRole, node)
-        cur.setText(1, "" if node["op"] in GROUPS else query.to_text(node))
-        self._tree_to_text()
-
-
 class Main(QMainWindow):
     estimated = Signal(object)
     finished = Signal(object, object)  # (callback, result) from a background thread
+    cuda = Signal(bool, str)
 
     def __init__(self, version: str):
         super().__init__()
@@ -317,6 +73,10 @@ class Main(QMainWindow):
         self.panels_added = False
         self.estimated.connect(self._show_estimate)
         self.finished.connect(lambda done, result: done(result))
+        QApplication.setOrganizationName("SeedFindersToolkit")
+        QApplication.setApplicationName("sft")
+        self.settings = QSettings()  # default format: the registry on Windows, tests redirect it
+        self.help_window = None
 
         # controls
         bar = QToolBar("search")
@@ -335,14 +95,34 @@ class Main(QMainWindow):
         for w in (self.start, self.count):
             w.setFont(MONO)
             w.setMaximumWidth(170)
+        tips = {"version": "Minecraft version (prepared data folders)", "mode": "which seeds to search (Help > Search modes)",
+                "start": "first seed (or structure seed / random generator seed)", "count": "how many seeds; accepts 10k, 2.5M, 1G, 2^48",
+                "threads": "CPU threads", "max": "stop after this many matches (best N when ranking)"}
         for label, w in (("version", self.version), ("mode", self.mode), ("start", self.start), ("count", self.count),
                          ("threads", self.threads), ("max", self.max_results)):
-            bar.addWidget(QLabel(f" {label} "))
+            lab = QLabel(f" {label} ")
+            lab.setToolTip(tips[label])
+            w.setToolTip(w.toolTip() or tips[label])
+            bar.addWidget(lab)
             bar.addWidget(w)
+        self.use_gpu = QCheckBox("GPU", enabled=False, toolTip="run the seed-only part of the query (structure placement, slime chunks) on the GPU")
+        self.gpu_status = QLabel(" checking CUDA… ")
+        self.gpu_status.setStyleSheet("color: #9aa8b8")
         bar.addSeparator()
+        bar.addWidget(self.use_gpu)
+        bar.addWidget(self.gpu_status)
+        self.cuda.connect(self._cuda_ready)
+        threading.Thread(target=lambda: self.cuda.emit(*sft.cuda_status()), daemon=True).start()
+        bar.addSeparator()
+        self.actions_bar = {}
+        tips = {"Estimate": "run the search for 3 seconds and project the total time and how rare matches are",
+                "Start": "start searching", "Stop": "stop (Resume continues from here)", "Resume": "continue a stopped search",
+                "Export": "save the results as CSV, JSON or a seed list"}
         for name, fn in (("Estimate", self.estimate), ("Start", self.start_search), ("Stop", self.stop_search),
                          ("Resume", self.resume_search), ("Export", self.export)):
-            bar.addAction(QAction(name, self, triggered=fn))
+            a = QAction(name, self, triggered=fn, toolTip=tips[name])
+            bar.addAction(a)
+            self.actions_bar[name] = bar.widgetForAction(a)
         tools = QToolButton(text="Tools", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
         tm = QMenu(tools)
         tm.addAction("Scan map seed for the query...", self.scan)
@@ -351,9 +131,20 @@ class Main(QMainWindow):
         tm.addAction("Search sister seeds of map seed", self.sisters)
         tools.setMenu(tm)
         bar.addWidget(tools)
+        self.toolbar = bar
+
+        hm = self.menuBar().addMenu("&Help")
+        hm.addAction("Getting started", QKeySequence("F1"), lambda: self.show_help("Getting-Started.md"))
+        hm.addAction("Building queries", lambda: self.show_help("GUI.md", "Query editor"))
+        hm.addAction("Every condition (query language)", lambda: self.show_help("Query-Language.md"))
+        hm.addAction("Search modes", lambda: self.show_help("Search-Modes.md"))
+        hm.addSeparator()
+        hm.addAction("Take the tour", self.tour)
+        hm.addAction("About", lambda: QMessageBox.about(self, "Seed Finders Toolkit", f"Seed Finders Toolkit {sft.__version__}\n"
+                     "Bit-exact Minecraft Java seed finding. Help > Overview lists the projects it builds on."))
 
         # query, stats, results
-        self.editor = QueryEditor()
+        self.editor = BlockEditor(open_wizard=self.open_wizard, show_help=self.help_on)
         self.results = QTableWidget(0, 4)
         self.results.setHorizontalHeaderLabels(["seed", "score", "matches", "details"])
         self.results.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -386,10 +177,11 @@ class Main(QMainWindow):
         middle.addWidget(stats_box)
         middle.addWidget(self.results)
         middle.setSizes([110, 600])
+        self.stats_box = stats_box
         split = QSplitter()
         split.addWidget(self.editor)
         split.addWidget(middle)
-        split.setSizes([480, 820])
+        split.setSizes([860, 520])
         self.setCentralWidget(split)
 
         # map dock
@@ -424,6 +216,7 @@ class Main(QMainWindow):
         dock = QDockWidget("map", self)
         dock.setWidget(map_box)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.map_box = map_box
 
         # log / plugins dock
         self.tabs = QTabWidget()
@@ -437,11 +230,70 @@ class Main(QMainWindow):
         bottom = QDockWidget("log / plugins", self)
         bottom.setWidget(self.tabs)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, bottom)
+        self.resizeDocks([bottom], [150], Qt.Orientation.Vertical)  # the query and results get the height
 
         self.timer = QTimer(self, interval=250, timeout=self._tick)
         self.version.currentTextChanged.connect(self.load_version)
         self.load_version(self.version.currentText())
         self.editor.set_text("village(within=300) and pillager_outpost(within=600)")
+        if not self.settings.value("tour_offered", False, type=bool):
+            QTimer.singleShot(700, self.welcome)
+
+    # help and tour
+    def show_help(self, page: str, find: str | None = None):
+        if self.help_window is None:
+            self.help_window = HelpWindow()
+        self.help_window.open(page, find)
+
+    def help_on(self, op: str):
+        self.show_help("Query-Language.md", f"{op}(")
+
+    def tour_steps(self):
+        e = self.editor
+        return [
+            (e.blocks_palette, "1. Building blocks", "Every kind of condition, by category. Drag one onto the canvas, or double-click it."),
+            (e.canvas, "2. Your query", "Blocks read like sentences: change the dropdowns and numbers in place. “ALL of these” means every "
+             "block must hold; switch it to ANY or NONE, or nest groups. Drag the ⠿ grip to move a block; ⋮ has more."),
+            (e.wizard_btn, "3. Not sure where to start?", "“I want…” asks a few plain questions (a structure near spawn, a slime farm, "
+             "a speedrun seed…) and builds the blocks for you. Presets has ready-made queries."),
+            (e.summary, "4. In plain words", "What the query finds, in words. The text box above it is the same query as text, for "
+             "copying or sharing; edits there update the blocks."),
+            (self.toolbar, "5. What to search", "mode picks the seeds: a range, structure seeds (much faster for structure queries), "
+             "random seeds or a list. count is how many (10M, 2^48…). Tick GPU when it says “CUDA compatible”."),
+            (self.actions_bar["Estimate"], "6. Estimate, then Start", "Estimate runs the search for 3 seconds and tells you how long the "
+             "whole range takes and how rare matches are. Start runs it; Stop and Resume pick up exactly where you left off."),
+            (self.stats_box, "7. Live progress", "Progress, speed, time left, matches found and the expected time to the next match."),
+            (self.results, "8. Results", "Matching seeds appear here as they are found. Click one to see it on the map; right-click to copy "
+             "the seed or a /tp command."),
+            (self.map_box, "9. Map", "The selected seed's biomes and structures. Drag to pan, scroll to zoom. Tools > Scan shows every "
+             "place in this seed where the query matches."),
+            (None, "That's it", "Help (F1) has the full guide and every condition explained. You can take this tour again from the Help menu."),
+        ]
+
+    def welcome(self):
+        self.settings.setValue("tour_offered", True)
+        Tour(self, [(None, "Welcome to Seed Finders Toolkit", "Find Minecraft seeds by what is in them: structures, biomes, terrain, "
+                     "chest loot. Take a one-minute tour of the window?")], lambda r: r == "start" and self.tour(), welcome=True)
+
+    def tour(self):
+        Tour(self, self.tour_steps(), lambda r: None)
+
+    def open_wizard(self):
+        def add(node, replace):
+            if replace or not self.editor.root.body.kids:
+                self.editor.set_text(query.to_text(node))
+            else:
+                self.editor.add(node)
+        Wizard(self, self.editor.names, add).exec()
+
+    def _cuda_ready(self, ok: bool, msg: str):
+        self.use_gpu.setEnabled(ok)
+        self.use_gpu.setChecked(ok and self.settings.value("use_gpu", True, type=bool))
+        self.use_gpu.toggled.connect(lambda v: self.settings.setValue("use_gpu", v))
+        self.gpu_status.setText(" CUDA compatible " if ok else " no CUDA ")
+        self.gpu_status.setStyleSheet(f"color: {'#6fcf7f' if ok else '#9aa8b8'}")
+        self.gpu_status.setToolTip(msg if ok else f"GPU not available: {msg}")
+        self.use_gpu.setToolTip((f"{msg}: " if ok else "") + self.use_gpu.toolTip())
 
     def say(self, msg: str):
         self.log.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -508,8 +360,11 @@ class Main(QMainWindow):
             elif mode_text.startswith("plugin: "):
                 src = self.loaded[1].seed_sources[mode_text.removeprefix("plugin: ")]
                 seeds, mode = [s for _, s in zip(range(parse_count(self.count.text())), src())], "list"
-            return sft.Job(self.version.currentText(), self.editor.query(), mode, int(self.start.text()),
-                           parse_count(self.count.text()), seeds, self.max_results.value(), self.loaded)
+            job = sft.Job(self.version.currentText(), self.editor.query(), mode, int(self.start.text()),
+                          parse_count(self.count.text()), seeds, self.max_results.value(), self.loaded, gpu=self.use_gpu.isChecked())
+            if job.gpu_note:
+                self.say(job.gpu_note)
+            return job
         except Exception as e:
             QMessageBox.warning(self, "cannot start", str(e))
             return None
@@ -757,7 +612,7 @@ class Main(QMainWindow):
                 self.job.start(self.threads.value())
                 self.timer.start()
                 self.say(f"checking {len(found) * 65536:,} sister seeds")
-        self._background(lambda: sft.crack(self.version.currentText(), obs, extra), done)
+        self._background(lambda: sft.crack(self.version.currentText(), obs, extra, gpu=self.use_gpu.isChecked()), done)
 
     def placement_stats(self):
         names = [self.map_attempts.itemText(i) for i in range(1, self.map_attempts.count())]

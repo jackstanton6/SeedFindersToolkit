@@ -39,6 +39,8 @@ def test_comparisons():
     assert parse("nearest('village') < 400") == {"op": "nearest", "name": "village", "max": math.nextafter(400, -math.inf)}
     assert parse("300 <= village(within=500)") == {"op": "structure", "name": "village", "within": 500, "min": 300}
     assert to_text(parse("nearest('village') < 400")) == "nearest('village') < 400"
+    assert to_text(parse("slime(radius=64) >= 12")) == "slime(radius=64) >= 12"
+    assert to_text(parse("12 <= slime() <= 20")) == "12 <= slime() <= 20"
     assert parse("village + 1 > 2")["op"] == "cmp"
     for bad in ["village < monument", "1 < 2", "village + 1"]:
         try:

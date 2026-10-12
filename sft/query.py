@@ -163,7 +163,10 @@ def to_text(node: dict, parent: str = "") -> str:
             s = f"{e} == {repr(lo)}"
         else:
             s = e
-            if lo is not None:
+            if lo is not None and hi is None:
+                eq, n = _bound(lo, -math.inf)
+                s = f"{s} >{eq} {n}"
+            elif lo is not None:
                 eq, n = _bound(lo, -math.inf)
                 s = f"{n} <{eq} {s}"
             if hi is not None:
@@ -181,7 +184,12 @@ def to_text(node: dict, parent: str = "") -> str:
     if op == "not":
         return f"not {to_text(node['arg'], 'not')}"
     pos = POSITIONAL.get(op, [])
-    args = [repr(node[k]) for k in pos if k in node]
+    name = node.get("name")
+    if op == "structure" and isinstance(name, str) and name.isidentifier() and name not in CALLS and name not in ("and", "or", "not"):
+        op, pos = name, ["name"]  # shorthand: village(within=300); "name" is then not printed again
+        args = []
+    else:
+        args = [repr(node[k]) for k in pos if k in node]
     extra = node.get("params", {}) if op in ("native", "py") else {k: v for k, v in node.items() if k not in ("op", *pos)}
     args += [f"{k}={_arg(v)}" for k, v in extra.items()]
     return f"{op}({', '.join(args)})"
