@@ -46,7 +46,8 @@ Stop at any time. Every unit before the reported resume point is complete; Resum
   lists every place it matches, nearest first, as map pins.
 
   ```sh
-  python -m sft scan 12345 "cluster('swamp_hut', count=3, dist=128, afk=True, within=0)" --within 20000 --step 256
+  python -m sft scan 12345 "village(within=150) >= 2" --within 10000 --step 128          # double villages
+  python -m sft scan 12345 "cluster('swamp_hut', count=2, dist=128, afk=True, within=192)" --within 30000 --step 256
   python -m sft scan 12345 "biome('cherry_grove', within=64, fraction=0.9)" --anchor village --within 5000
   ```
 - **Loot** (CLI `loot`): every chest of a structure type near a point, with its contents.

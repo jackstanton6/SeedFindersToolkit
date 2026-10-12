@@ -85,7 +85,7 @@ PRESETS = {  # ready-made queries (overworld speedrun parts and common hunts)
     "biggest mushroom island (record)": "maximize(island(biomes=['mushroom_fields'], within=3000, window=1500))",
     "all biomes near spawn": "biome_count(within=3000, step=32) >= 45",
     "structure bingo": "bingo(within=1500) >= 13",
-    "village overlapping an outpost": "overlap('village', 'pillager_outpost', within=3000)",
+    "desert temple inside a village": "overlap('desert_pyramid', 'village', within=3000)",
     "stronghold under a village": "near('stronghold', 'village', dist=96, within=3000)",
     "three strongholds close together": "cluster('stronghold', count=3, dist=1200, within=3000)",
     "basement igloo near spawn": "igloo(within=600, tags=['basement'])",
