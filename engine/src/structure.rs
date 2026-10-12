@@ -64,6 +64,20 @@ enum PortalPlacement {
     InNether,
 }
 
+impl PortalPlacement {
+    /// The game's name (data/json "placement" values).
+    fn name(self) -> &'static str {
+        match self {
+            PortalPlacement::OnLandSurface => "on_land_surface",
+            PortalPlacement::PartlyBuried => "partly_buried",
+            PortalPlacement::OnOceanFloor => "on_ocean_floor",
+            PortalPlacement::InMountain => "in_mountain",
+            PortalPlacement::Underground => "underground",
+            PortalPlacement::InNether => "in_nether",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PortalSetup {
     placement: PortalPlacement,
@@ -791,7 +805,7 @@ impl Structures {
         };
         let columns: Vec<Vec<Block>> = [(b[0], b[2]), (b[3], b[2]), (b[0], b[5]), (b[3], b[5])].iter().map(|&(x, z)| s.column(x, z)).collect();
         let at = |col: &Vec<Block>, y: i32| col.get((y - s.w.min_y) as usize).copied().filter(|_| y >= s.w.min_y).unwrap_or(Block::Air);
-        let mut tags = vec![format!("template:{name}"), format!("placement:{:?}", setup.placement).to_lowercase()];
+        let mut tags = vec![format!("template:{name}"), format!("placement:{}", setup.placement.name())];
         tags.extend([(giant, "giant"), (mirror, "mirrored"), (air, "air_pocket")].iter().filter(|t| t.0).map(|t| t.1.to_string()));
         let done = |y: i32| Some(((cx * 16, y, cz * 16), Some([b[0], b[1] + y, b[2], b[3], b[4] + y, b[5]]), tags.clone()));
         let mut y = new_y;

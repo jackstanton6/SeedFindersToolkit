@@ -2,8 +2,10 @@
 
 Everything comes from the official server jar, so no Mojang data lives in the repo:
   1. download server.jar from Mojang's version manifest (sha1-checked)
-  2. copy worldgen JSON, biome tags and structure templates out of the inner jar
-  3. run the vanilla data generator for the multi-noise biome parameter table
+  2. copy worldgen JSON, structure templates, loot tables, enchantments and their tags out of the
+     inner jar
+  3. run the vanilla data generator for the multi-noise biome parameter table and item components
+     (stack sizes, enchantability -> items.json)
 Needs Java on PATH for step 3.
 """
 import hashlib
@@ -17,7 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
-KEEP = ("data/minecraft/worldgen/", "data/minecraft/tags/worldgen/", "data/minecraft/structure/")
+KEEP = ("data/minecraft/worldgen/", "data/minecraft/tags/worldgen/", "data/minecraft/structure/", "data/minecraft/loot_table/",
+        "data/minecraft/enchantment/", "data/minecraft/tags/item/", "data/minecraft/tags/enchantment/")
 
 
 def data_dir(version: str) -> Path:
@@ -64,7 +67,17 @@ def extract(version: str, server_jar: Path) -> None:
         cwd=work, check=True, capture_output=True,
     )
     shutil.copytree(work / "generated/reports/biome_parameters", out / "reports/biome_parameters", dirs_exist_ok=True)
+    write_items(work / "generated/reports/minecraft/components/item", out / "items.json")
     (out / "version.txt").write_text(version)
+
+
+def write_items(report: Path, dest: Path) -> None:
+    """item id -> [max stack size, enchantability (0 = not enchantable)], what loot generation needs."""
+    items = {}
+    for f in sorted(report.glob("*.json")):
+        c = json.loads(f.read_text())["components"]
+        items[f"minecraft:{f.stem}"] = [c.get("minecraft:max_stack_size", 64), c.get("minecraft:enchantable", {}).get("value", 0)]
+    dest.write_text(json.dumps(items, separators=(",", ":")))
 
 
 def setup(version: str, server_jar: str | None = None) -> Path:

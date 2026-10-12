@@ -161,16 +161,24 @@ Progress:
   (58x58), jigsaw start piece, and ruined portal (template box + tags template/placement/giant/
   mirrored/air_pocket). Igloo `basement` + `ladders:N`, shipwreck `template:` + `chest:<marker>`
   (from template DATA markers), ocean ruin `large`/`cluster`/`ruins:N` (addClusterRuins simulated).
-  Parity suite still passes. **Not yet oracle-verified:** boxes and tags. Next step is an oracle
-  mode that runs `structure.generate()` and dumps piece 0's box and piece templates/count.
-- [ ] Rewrite `search.rs` conditions around a numeric core (design below).
-- [ ] Python DSL: expressions, `maximize`/`minimize`, comparisons; GUI templates, score column, top-N.
-- [ ] Single-seed scan (`World.scan`), attempts/heatmap overlays, placement stats, rarity CI.
-- [ ] Seed cracking (`engine/src/crack.rs`): low-bit lifting on even spacing limits, then brute
-  force of the high bits, then sister expansion with biome checks. Sister explorer = list mode.
-- [ ] Slime chunks (`WorldgenRandom.seedSlimeChunk(x, z, seed, 987234911).nextInt(10) == 0`; note
-  the int overflow in `x*x*4987142`, `x*5947611`, `z*389711`).
-- [ ] Chest loot: extract `loot_table`, `enchantment`, item/enchantment tags in `sft/data.py`; dump item
+  Oracle-verified (327 piece rows, 4 seeds).
+- [x] Conditions rewritten around a numeric core in `engine/src/query.rs` (design below); the runner
+  and native ABI stay in `search.rs`. Native filters' return value is their metric.
+- [x] Python DSL: comparisons (lowered to metric bounds when possible), arithmetic, `maximize`/
+  `minimize`, `anywhere`; GUI condition menu by category, presets menu, score column, live top-N.
+- [x] Single-seed scan (`World.scan`, CLI `scan`, GUI Tools), attempts overlay with stronghold ring
+  bands, placement statistics, rarity (Wilson 95% interval, time to first match).
+- [x] Seed cracking (`engine/src/crack.rs`, CLI `crack`, GUI Tools): low-bit lifting, high-bit brute
+  force, sister expansion as a list search with the observations. `search --sisters` explorer.
+- [x] Slime chunks, oracle-verified (80k chunks).
+- [ ] Chest loot (in progress): data extraction done (`loot_table`, `enchantment`, item/enchantment
+  tags, `items.json` from the item component report). Findings: the 26.x decoration random is a
+  `WorldgenRandom` over Xoroshiro (`next(bits)` = top bits of `nextLong`); every template block with
+  NBT that becomes a container takes a `nextLong` in (y, x, z) order inside the chunk, then data
+  markers take theirs; beached shipwrecks consume `random` for height only in the first chunk
+  processed. Oracle plan: the dedicated server (fill: setblock chests with explicit seeds, unpack
+  with `item replace ... from`, read region files; seeds: forceload predicted structures and read
+  `LootTableSeed` from region files). Original plan: extract `loot_table`, `enchantment`, item/enchantment tags in `sft/data.py`; dump item
   max stack sizes and enchantability with a small Java step; port LootTable fill (pools, entries,
   conditions, functions, slot shuffle and split); loot seeds for buried treasure, shipwrecks,
   ruined portals, igloo basement, desert pyramid (if its postProcess random use is world-free),
