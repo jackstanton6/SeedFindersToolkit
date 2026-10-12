@@ -907,24 +907,28 @@ impl<'w> Eval<'w> {
         let near = |k: usize| dist2(g.pos(k), at) <= (within.max(step / 2) as i64).pow(2);
         let water = g.components(&land.iter().map(|l| !l).collect::<Vec<_>>());
         let mut best = 0.0;
-        for comp in g.components(&land) {
+        let comps = g.components(&land);
+        let mut owner = vec![usize::MAX; land.len()];
+        for (ci, comp) in comps.iter().enumerate() {
+            comp.iter().for_each(|&k| owner[k] = ci);
+        }
+        for (ci, comp) in comps.iter().enumerate() {
             if !comp.iter().any(|&k| near(k)) || comp.iter().any(|&k| g.on_border(k)) {
                 continue;
             }
-            let mut member = vec![false; land.len()];
-            comp.iter().for_each(|&k| member[k] = true);
-            if biomes.is_some() && comp.iter().any(|&k| g.neighbours(k).any(|nb| !member[nb] && !contains(ocean, g.ids[nb]))) {
+            let member = |k: usize| owner[k] == ci;
+            if biomes.is_some() && comp.iter().any(|&k| g.neighbours(k).any(|nb| !member(nb) && !contains(ocean, g.ids[nb]))) {
                 continue;
             }
             let area = comp.len() as f64;
-            let perimeter = comp.iter().map(|&k| 4 - g.neighbours(k).filter(|&nb| member[nb]).count()).sum::<usize>() as f64;
+            let perimeter = comp.iter().map(|&k| 4 - g.neighbours(k).filter(|&nb| member(nb)).count()).sum::<usize>() as f64;
             let circ = 4.0 * std::f64::consts::PI * area / (perimeter * perimeter);
             let (xs, zs): (Vec<i32>, Vec<i32>) = comp.iter().map(|&k| (k as i32 % g.n, k as i32 / g.n)).unzip();
             let (w, h) = ((xs.iter().max().unwrap() - xs.iter().min().unwrap() + 1) as f64, (zs.iter().max().unwrap() - zs.iter().min().unwrap() + 1) as f64);
             let elong = w.max(h) / w.min(h);
             // a lagoon: a water component enclosed by this island alone
-            let enclosed = |wc: &Vec<usize>| wc.iter().all(|&k| !g.on_border(k) && g.neighbours(k).all(|nb| member[nb] || !land[nb]));
-            if circ < min_circ || elong > max_elong || (lagoon && !water.iter().any(|wc| wc.iter().any(|&k| g.neighbours(k).any(|nb| member[nb])) && enclosed(wc))) {
+            let enclosed = |wc: &Vec<usize>| wc.iter().all(|&k| !g.on_border(k) && g.neighbours(k).all(|nb| member(nb) || !land[nb]));
+            if circ < min_circ || elong > max_elong || (lagoon && !water.iter().any(|wc| wc.iter().any(|&k| g.neighbours(k).any(|nb| member(nb))) && enclosed(wc))) {
                 continue;
             }
             let blocks = area * (step as f64).powi(2);

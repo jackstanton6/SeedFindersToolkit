@@ -240,7 +240,8 @@ impl Search {
     /// Runs units [from, to) on `threads` workers pulling blocks in order. Returns the resume
     /// point: every unit before it is done.
     pub fn run(&self, from: u64, to: u64, threads: usize) -> u64 {
-        let block = if matches!(self.mode, Mode::StructureSeeds { .. }) { 1 } else { 256 };
+        // small blocks when there is little work, so slow queries still use every thread
+        let block = if matches!(self.mode, Mode::StructureSeeds { .. }) { 1 } else { ((to - from) / (threads.max(1) as u64 * 16)).clamp(1, 256) };
         let next = AtomicU64::new(from);
         let resume = AtomicU64::new(u64::MAX);
         std::thread::scope(|sc| {

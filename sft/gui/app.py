@@ -9,7 +9,7 @@ import time
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QPalette
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
@@ -20,14 +20,65 @@ from sft import plugins, query
 from sft.gui.mapview import DEFAULT_SETS, MapView
 
 MONO = QFont("Consolas", 9)
-TEMPLATES = {
-    "structure": {"name": "village", "within": 500},
-    "near": {"a": "village", "b": "pillager_outpost", "dist": 150, "within": 1000},
-    "biome": {"name": "mushroom_fields", "within": 500, "y": 64, "step": 16},
-    "climate": {"param": "continentalness", "at": [0, 0], "y": 64, "min": 0.5},
-    "height": {"at": [0, 0], "min": 120},
-    "native": {"plugin": "example_rust", "filter": "spawn_island", "params": {}},
-    "py": {"name": "example_python.seed_contains", "params": {"text": "777"}},
+_COUNT = {"op": "structure", "name": "village", "within": 1000}
+TEMPLATES = {  # category -> condition -> default node (without "op")
+    "structures": {
+        "structure": {"name": "village", "within": 500},
+        "nearest": {"name": "stronghold", "within": 3000, "max": 1500},
+        "near": {"a": "village", "b": "pillager_outpost", "dist": 150, "within": 1000},
+        "cluster": {"names": "swamp_hut", "count": 3, "dist": 128, "within": 5000, "afk": True},
+        "chain": {"names": ["village", "pillager_outpost", "village"], "dist": 400, "within": 2000},
+        "overlap": {"a": "village", "b": "pillager_outpost", "within": 3000, "margin": 0},
+        "bingo": {"within": 1500, "min": 12},
+    },
+    "biomes": {
+        "biome": {"name": "mushroom_fields", "within": 500, "y": 64, "step": 16},
+        "biome_area": {"name": "mushroom_fields", "within": 2000, "window": 1024, "step": 32, "min": 100000},
+        "biome_count": {"within": 1000, "step": 32, "min": 20},
+        "biome_border": {"a": "desert", "b": "snowy_plains", "within": 2000, "step": 32},
+        "island": {"within": 3000, "window": 1024, "step": 32, "min_circularity": 0.5, "min": 50000},
+    },
+    "terrain": {
+        "climate": {"param": "continentalness", "at": [0, 0], "y": 64, "min": 0.5},
+        "height": {"at": [0, 0], "min": 120},
+        "peak": {"within": 500, "step": 32, "min": 250},
+        "trench": {"within": 1000, "step": 32, "max": -20},
+        "cliff": {"within": 300, "step": 8, "min": 40},
+        "overhang": {"within": 200, "step": 16, "min": 20},
+        "void": {"within": 64, "step": 16, "min": 30},
+        "lake": {"fluid": "lava", "within": 200, "step": 16, "min": 10},
+        "slime": {"radius": 128, "within": 300, "min": 14},
+    },
+    "scores": {
+        "maximize": {"expr": _COUNT},
+        "minimize": {"expr": {"op": "nearest", "name": "stronghold", "within": 3000}},
+        "cmp": {"expr": {"op": "sub", "a": _COUNT, "b": {**_COUNT, "name": "pillager_outpost"}}, "min": 2},
+        "anywhere": {"cond": {"op": "slime", "radius": 24, "min": 5}, "within": 1000, "step": 32},
+    },
+    "plugins": {
+        "native": {"plugin": "example_rust", "filter": "spawn_island", "params": {}},
+        "py": {"name": "example_python.seed_contains", "params": {"text": "777"}},
+    },
+}
+DEFAULTS = {op: node for group in TEMPLATES.values() for op, node in group.items()}
+PRESETS = {  # ready-made queries (overworld speedrun parts and common hunts)
+    "speedrun: village + ruined portal at spawn": "village(within=160) and ruined_portal(within=160, tags=['placement:on_land_surface'])",
+    "speedrun: shipwreck + buried treasure at spawn": "shipwreck(within=200, tags=['chest:']) and buried_treasure(within=200)",
+    "speedrun: desert temple + village": "desert_pyramid(within=200) and village(within=300)",
+    "speedrun: close stronghold": "nearest('stronghold', within=2000) < 1450 and village(within=300)",
+    "quad witch huts (AFK spot)": "cluster('swamp_hut', count=4, dist=128, within=20000, afk=True)",
+    "triple witch huts": "cluster('swamp_hut', count=3, dist=128, within=10000, afk=True)",
+    "double ocean monument": "cluster('monument', count=2, dist=128, within=10000, afk=True)",
+    "slime farm": "slime(radius=128, within=500) >= 16",
+    "mushroom island near spawn": "island(biomes=['mushroom_fields'], within=1500, window=1024)",
+    "biggest mushroom island (record)": "maximize(island(biomes=['mushroom_fields'], within=3000, window=1500))",
+    "all biomes near spawn": "biome_count(within=3000, step=32) >= 45",
+    "structure bingo": "bingo(within=1500) >= 13",
+    "village overlapping an outpost": "overlap('village', 'pillager_outpost', within=3000)",
+    "stronghold under a village": "near('stronghold', 'village', dist=96, within=3000)",
+    "three strongholds close together": "cluster('stronghold', count=3, dist=1200, within=3000)",
+    "basement igloo near spawn": "igloo(within=600, tags=['basement'])",
+    "ocean ruin city": "cluster('ocean_ruin', count=5, dist=96, within=3000)",
 }
 GROUPS = ("and", "or", "not")
 MAX_TABLE_ROWS = 200_000
@@ -60,7 +111,11 @@ def fmt_num(v) -> str:
 
 
 def summary(details: list) -> str:
-    return ", ".join(f"{d['name'].split(':')[-1]}@{d['x']},{d['z']}" for d in details if d.get("type") == "structure")[:300]
+    def one(d):
+        if d.get("type") == "island":
+            return f"island {d['area']:.0f} blocks@{d['x']},{d['z']}"
+        return f"{d.get('name', d.get('type', '?')).split(':')[-1]}@{d['x']},{d['z']}"
+    return ", ".join(one(d) for d in details if "x" in d)[:300]
 
 
 class QueryEditor(QWidget):
@@ -92,9 +147,20 @@ class QueryEditor(QWidget):
         self.reference.itemDoubleClicked.connect(lambda it: self.text.insertPlainText(repr(it.data(Qt.ItemDataRole.UserRole))))
 
         buttons = QHBoxLayout()
-        for op in (*GROUPS, *TEMPLATES):
-            b = QToolButton(text=op)
-            b.clicked.connect(lambda _=False, o=op: self.add(o))
+        for op in GROUPS:
+            buttons.addWidget(QToolButton(text=op, clicked=lambda _=False, o=op: self.add(o)))
+        for title, items in (("+ condition", None), ("presets", PRESETS)):
+            b = QToolButton(text=title, popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
+            m = QMenu(b)
+            if items is None:
+                for cat, ops in TEMPLATES.items():
+                    sub = m.addMenu(cat)
+                    for op in ops:
+                        sub.addAction(op, lambda o=op: self.add(o))
+            else:
+                for name, text in items.items():
+                    m.addAction(name, lambda t=text: self.set_text(t))
+            b.setMenu(m)
             buttons.addWidget(b)
         buttons.addWidget(QToolButton(text="delete", clicked=self.delete))
         buttons.addStretch()
@@ -176,7 +242,7 @@ class QueryEditor(QWidget):
         self.tree.addTopLevelItem(root)
 
     def add(self, op: str):
-        it = self._item({"op": op, **json.loads(json.dumps(TEMPLATES.get(op, {})))})
+        it = self._item({"op": op, **json.loads(json.dumps(DEFAULTS.get(op, {})))})
         cur = self.tree.currentItem()
         if self.tree.topLevelItem(0) is None:
             self.tree.addTopLevelItem(it)
@@ -228,6 +294,7 @@ class QueryEditor(QWidget):
 
 class Main(QMainWindow):
     estimated = Signal(object)
+    finished = Signal(object, object)  # (callback, result) from a background thread
 
     def __init__(self, version: str):
         super().__init__()
@@ -238,6 +305,7 @@ class Main(QMainWindow):
         self.start_after_estimate = False
         self.panels_added = False
         self.estimated.connect(self._show_estimate)
+        self.finished.connect(lambda done, result: done(result))
 
         # controls
         bar = QToolBar("search")
@@ -263,12 +331,20 @@ class Main(QMainWindow):
         for name, fn in (("Estimate", self.estimate), ("Start", self.start_search), ("Stop", self.stop_search),
                          ("Resume", self.resume_search), ("Export", self.export)):
             bar.addAction(QAction(name, self, triggered=fn))
+        tools = QToolButton(text="Tools", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
+        tm = QMenu(tools)
+        tm.addAction("Scan map seed for the query...", self.scan)
+        tm.addAction("Crack seed from structures...", self.crack)
+        tm.addAction("Placement statistics...", self.placement_stats)
+        tm.addAction("Search sister seeds of map seed", self.sisters)
+        tools.setMenu(tm)
+        bar.addWidget(tools)
 
         # query, stats, results
         self.editor = QueryEditor()
-        self.results = QTableWidget(0, 3)
-        self.results.setHorizontalHeaderLabels(["seed", "matches", "details"])
-        self.results.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.results = QTableWidget(0, 4)
+        self.results.setHorizontalHeaderLabels(["seed", "score", "matches", "details"])
+        self.results.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.results.setFont(MONO)
         self.results.setSortingEnabled(True)
         self.results.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -280,7 +356,7 @@ class Main(QMainWindow):
         self.stat = {}
         grid = QGridLayout()
         keys = ["units", "rate", "checks", "checks/s", "prefilter pass", "full evals", "matches", "py rejected",
-                "elapsed", "eta", "est. total", "est. rate"]
+                "elapsed", "eta", "est. total", "est. rate", "match rate", "95% range", "first match", "kept"]
         for i, k in enumerate(keys):
             lab = QLabel("-")
             lab.setFont(MONO)
@@ -319,11 +395,13 @@ class Main(QMainWindow):
         self.map_structs = QCheckBox("structures", checked=True)
         self.map_sets = QToolButton(text="sets", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
         self.map_sets.setMenu(QMenu(self.map_sets))
+        self.map_attempts = QComboBox(toolTip="overlay every placement attempt of a set (x = failed start)")
+        self.map_attempts.currentTextChanged.connect(self._map_from_controls)
         row1, row2 = QHBoxLayout(), QHBoxLayout()
         for w in (QLabel("seed"), self.map_seed, QLabel("x"), self.map_x, QLabel("z"), self.map_z):
             row1.addWidget(w)
         for w in (QLabel("y"), self.map_y, QLabel("blocks/px"), self.map_scale, self.map_height, self.map_structs,
-                  self.map_sets, QPushButton("render", clicked=self._map_from_controls)):
+                  self.map_sets, QLabel("attempts"), self.map_attempts, QPushButton("render", clicked=self._map_from_controls)):
             row2.addWidget(w)
         map_box = QWidget()
         ml = QVBoxLayout(map_box)
@@ -385,7 +463,12 @@ class Main(QMainWindow):
                     self.say(f"plugin panel '{title}' failed: {e}")
         menu = self.map_sets.menu()
         menu.clear()
-        for set_name in sorted({s for _, s, _, possible in self.world.structures() if possible}):
+        set_names = sorted({s for _, s, _, possible in self.world.structures() if possible})
+        self.map_attempts.blockSignals(True)
+        self.map_attempts.clear()
+        self.map_attempts.addItems([""] + [n.split(":")[-1] for n in set_names])
+        self.map_attempts.blockSignals(False)
+        for set_name in set_names:
             short = set_name.split(":")[-1]
             a = menu.addAction(short)
             a.setCheckable(True)
@@ -441,8 +524,14 @@ class Main(QMainWindow):
         if "seconds_total" in est:
             self.stat["est. total"].setText(fmt_secs(est["seconds_total"]))
             self.stat["est. rate"].setText(f"{fmt_num(est['units_per_sec'])}/s")
+            r = sft.rarity(est)
+            self.stat["match rate"].setText(f"{r['p']:.3g}")
+            self.stat["95% range"].setText(f"{r['low']:.2g}..{r['high']:.2g}")
+            first = fmt_secs(r["seconds_to_first"]) if r["p"] else "> " + fmt_secs(r["seconds_to_first_range"][0])
+            self.stat["first match"].setText(first)
             self.say(f"estimate: {fmt_num(est['units_per_sec'])} units/s, prefilter pass {est['prefilter_rate']:.3%}, "
-                     f"match rate {est['match_rate']:.4%}, total {fmt_secs(est['seconds_total'])}")
+                     f"match rate {r['p']:.3g} (95% {r['low']:.2g}..{r['high']:.2g}), first match ~{first}, "
+                     f"total {fmt_secs(est['seconds_total'])}")
         else:
             self.say(est.get("note", "no estimate"))
         if self.start_after_estimate:
@@ -482,16 +571,31 @@ class Main(QMainWindow):
         seed_item.setData(Qt.ItemDataRole.DisplayRole, seed)
         seed_item.setData(Qt.ItemDataRole.UserRole, details)
         self.results.setItem(r, 0, seed_item)
-        self.results.setItem(r, 1, QTableWidgetItem(summary(details)))
-        self.results.setItem(r, 2, QTableWidgetItem(json.dumps(details)))
+        score_item = QTableWidgetItem()
+        if self.job is not None and self.job.ranked:
+            score_item.setData(Qt.ItemDataRole.DisplayRole, round(sft.score(details), 4))
+        self.results.setItem(r, 1, score_item)
+        self.results.setItem(r, 2, QTableWidgetItem(summary(details)))
+        self.results.setItem(r, 3, QTableWidgetItem(json.dumps(details)))
         self.results.setSortingEnabled(True)
+
+    def _show_rows(self, new):
+        if self.job.ranked:  # top-N: the kept rows change as better seeds arrive
+            if new:
+                self.results.setRowCount(0)
+                for seed, details in self.job.rows:
+                    self._add_row(seed, details)
+                self.results.sortItems(1, Qt.SortOrder.DescendingOrder)
+        else:
+            for seed, details in new:
+                self._add_row(seed, details)
 
     def _tick(self):
         if self.job is None:
             return
-        for seed, details in self.job.poll():
-            self._add_row(seed, details)
+        self._show_rows(self.job.poll())
         s = self.job.stats()
+        self.stat["kept"].setText(fmt_num(len(self.job.rows)))
         self.progress.setValue(int(s["progress"] * 1000))
         self.progress.setFormat(f"{s['progress']:.3%}")
         self.stat["units"].setText(f"{fmt_num(s['units_done'])} / {fmt_num(s['units_total'])}")
@@ -507,8 +611,7 @@ class Main(QMainWindow):
         if not self.job.running():
             self.timer.stop()
             self.resume_unit = self.job.join()
-            for seed, details in self.job.poll():  # stragglers after the last tick
-                self._add_row(seed, details)
+            self._show_rows(self.job.poll())  # stragglers after the last tick
             done = self.resume_unit >= s["units_total"]
             self.say(f"search {'finished' if done else f'stopped, resume at unit {self.resume_unit}'}: "
                      f"{fmt_num(s['matched'])} matches, {fmt_num(s['checks'])} checks in {fmt_secs(s['elapsed'])}")
@@ -561,6 +664,113 @@ class Main(QMainWindow):
         (exporters[name][0] if name in exporters else sft.export)(self.job.rows, path)
         self.say(f"exported {len(self.job.rows)} rows to {path}")
 
+    # tools
+    def _background(self, fn, done):
+        threading.Thread(target=lambda: self.finished.emit(done, _try(fn)), daemon=True).start()
+
+    def _map_seed(self) -> int | None:
+        try:
+            return int(self.map_seed.text())
+        except ValueError:
+            QMessageBox.warning(self, "seed", "set a seed in the map panel first")
+            return None
+
+    def scan(self):
+        seed = self._map_seed()
+        if seed is None:
+            return
+        within, ok = QInputDialog.getInt(self, "scan", "search radius around the map centre (blocks)", 5000, 100, 100_000)
+        if not ok:
+            return
+        step, ok = QInputDialog.getInt(self, "scan", "anchor grid step (blocks); coordinates in the query are relative", 64, 4, 4096)
+        if not ok:
+            return
+        tree, _ = query.split_python(self.editor.query())
+        x, z = self.map_x.value(), self.map_z.value()
+        self.say(f"scanning seed {seed} within {within} of ({x}, {z})...")
+
+        def done(hits):
+            if isinstance(hits, Exception):
+                self.say(f"scan failed: {hits}")
+                return
+            self.map.pins = [(hx, hz, str(i + 1)) for i, (hx, hz, _) in enumerate(hits[:200])]
+            self.map.update()
+            self.say(f"scan: {len(hits)} place(s) match" + "".join(f"\n  {hx} {hz}  {summary(json.loads(d))}" for hx, hz, d in hits[:50]))
+        self._background(lambda: self.world.scan(seed, json.dumps(tree), x, z, within, step), done)
+
+    def crack(self):
+        text, ok = QInputDialog.getMultiLineText(
+            self, "crack", "One structure per line as 'name x z' (block coordinates from /locate or F3).\n"
+            "Huts, temples, outposts, igloos and shipwrecks narrow the search the most.\n"
+            "Optional last line 'query: ...' adds conditions (biomes, heights) for the sister check.", "")
+        if not ok or not text.strip():
+            return
+        obs, extra = [], ""
+        try:
+            for line in text.strip().splitlines():
+                if line.startswith("query:"):
+                    extra = line.removeprefix("query:").strip()
+                elif line.strip():
+                    n, x, z = line.replace(",", " ").split()
+                    obs.append((n, int(x), int(z)))
+        except ValueError:
+            QMessageBox.warning(self, "crack", f"cannot read line: {line}")
+            return
+        self.say(f"cracking from {len(obs)} structure(s)...")
+
+        def done(res):
+            if isinstance(res, Exception):
+                self.say(f"crack failed: {res}")
+                return
+            found, job = res
+            self.say(f"crack: {len(found)} structure seed(s): {' '.join(map(str, found))}")
+            if job:
+                self.job, self.resume_unit = job, 0
+                self.results.setRowCount(0)
+                self.job.start(self.threads.value())
+                self.timer.start()
+                self.say(f"checking {len(found) * 65536:,} sister seeds")
+        self._background(lambda: sft.crack(self.version.currentText(), obs, extra), done)
+
+    def placement_stats(self):
+        names = [self.map_attempts.itemText(i) for i in range(1, self.map_attempts.count())]
+        name, ok = QInputDialog.getItem(self, "placement statistics", "structure set", names, 0, False)
+        if not ok:
+            return
+        radius, ok = QInputDialog.getInt(self, "placement statistics", "radius around the map centre", 1000, 16, 50_000)
+        if not ok:
+            return
+        n = 2000
+        x, z = self.map_x.value(), self.map_z.value()
+        seeds = [int.from_bytes(os.urandom(8), "little", signed=True) for _ in range(n)]
+
+        def done(res):
+            if isinstance(res, Exception):
+                self.say(f"placement stats failed: {res}")
+                return
+            counts = [len(v) for v in res]
+            near = sorted(min(((px - x) ** 2 + (pz - z) ** 2) ** 0.5 for px, pz in v) for v in res if v)
+            q = (lambda f: f"{near[int(f * (len(near) - 1))]:.0f}") if near else (lambda f: "-")
+            self.say(f"{name} within {radius} of ({x}, {z}) over {n} random seeds: at least one {sum(c > 0 for c in counts) / n:.1%}, "
+                     f"mean count {sum(counts) / n:.2f}, max {max(counts)}; nearest distance median {q(0.5)}, 10% {q(0.1)}, 90% {q(0.9)}")
+        self._background(lambda: self.world.placement_stats(name, x, z, radius, seeds), done)
+
+    def sisters(self):
+        seed = self._map_seed()
+        if seed is None or (self.job and self.job.running()):
+            return
+        try:
+            self.job = sft.Job(self.version.currentText(), self.editor.query(), "list", seeds=sft.sisters([seed]),
+                               max_results=self.max_results.value(), loaded=self.loaded)
+        except Exception as e:
+            QMessageBox.warning(self, "cannot start", str(e))
+            return
+        self.resume_unit = 0
+        self.results.setRowCount(0)
+        self.job.start(self.threads.value())
+        self.timer.start()
+        self.say(f"searching the 65536 sister seeds of {seed}")
+
     # map
     def _map_sets_changed(self):
         self.map.structure_filter = [a.text() for a in self.map_sets.menu().actions() if a.isChecked()]
@@ -575,7 +785,17 @@ class Main(QMainWindow):
         self.map.scale = int(self.map_scale.currentText())
         self.map.show_height = self.map_height.isChecked()
         self.map.show_structures = self.map_structs.isChecked()
+        self.map.attempts_set = self.map_attempts.currentText()
+        if seed != self.map.seed:
+            self.map.pins = []
         self.map.show_seed(seed, self.map_x.value(), self.map_z.value())
+
+
+def _try(fn):
+    try:
+        return fn()
+    except Exception as e:  # shown in the log by the caller
+        return e
 
 
 def dark(app: QApplication):

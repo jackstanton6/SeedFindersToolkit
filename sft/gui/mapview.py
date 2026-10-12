@@ -60,6 +60,9 @@ class MapView(QWidget):
         self.ids: list[int] = []
         self.grid = (0, 0, 1, 1)  # x0, z0, w, h of the rendered image (cells of `scale` blocks)
         self.markers = []
+        self.attempts_set = ""  # overlay every placement attempt of this set (failed ones as x)
+        self.attempts = []
+        self.pins: list[tuple[int, int, str]] = []  # scan hits etc.
         self._drag: QPoint | None = None
         self._timer = QTimer(self, singleShot=True, interval=150, timeout=self.render)
 
@@ -96,6 +99,9 @@ class MapView(QWidget):
         self.markers = []
         if self.show_structures and self.structure_filter and radius <= MAX_MARKER_RADIUS:
             self.markers = self.world.structures_near(self.seed, self.cx, self.cz, radius, self.structure_filter)
+        self.attempts = []
+        if self.attempts_set and radius <= MAX_MARKER_RADIUS:
+            self.attempts = self.world.attempts(self.seed, self.attempts_set, self.cx, self.cz, radius)
         self.update()
 
     def to_screen(self, x, z) -> QPoint:
@@ -122,6 +128,29 @@ class MapView(QWidget):
             p.setBrush(QColor(colour))
             p.drawEllipse(q, 6, 6)
             p.drawText(QRect(q.x() - 6, q.y() - 7, 12, 14), Qt.AlignmentFlag.AlignCenter, letter if exact else letter + "?")
+        for x, z, name in self.attempts:
+            q = self.to_screen(x, z)
+            p.setPen(QPen(QColor(80, 255, 80) if name else QColor(255, 70, 70), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            if name:
+                p.drawRect(q.x() - 4, q.y() - 4, 8, 8)
+            else:
+                p.drawLine(q.x() - 4, q.y() - 4, q.x() + 4, q.y() + 4)
+                p.drawLine(q.x() - 4, q.y() + 4, q.x() + 4, q.y() - 4)
+        if "stronghold" in self.attempts_set:  # ring bands: (128 + 192c) chunks +- 40
+            o = self.to_screen(0, 0)
+            p.setPen(QPen(QColor(255, 255, 255, 70), 1))
+            for c in range(8):
+                for r in ((88 + 192 * c) * 16, (168 + 192 * c) * 16):
+                    d = int(r / self.scale * self.width() / max(self.grid[2], 1))
+                    p.drawEllipse(o, d, d)
+        p.setPen(QPen(QColor(0, 255, 255), 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for x, z, label in self.pins:
+            q = self.to_screen(x, z)
+            p.drawEllipse(q, 9, 9)
+            if label:
+                p.drawText(q.x() + 11, q.y() + 4, label)
         q = self.to_screen(0, 0)  # world origin crosshair
         p.setPen(QPen(QColor(255, 255, 255, 160), 1))
         p.drawLine(q.x() - 8, q.y(), q.x() + 8, q.y())
