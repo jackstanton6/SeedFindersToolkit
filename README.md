@@ -1,9 +1,11 @@
 # Seed Finders Toolkit
 
 A seed finder for advanced users, built around a bit-exact port of Minecraft Java 26.3 world
-generation. Write a query (structures, structure pairs, biomes, climate, terrain height, plugin
-filters), and a Rust engine scans billions of seeds in parallel while the PySide6 GUI shows
-progress, rate, estimated total time and ETA.
+generation. Write a query (structures, clusters and chains of structures, biomes, islands, terrain,
+slime chunks, chest loot, plugin filters, or a score to maximize), and a Rust engine scans billions
+of seeds in parallel while the PySide6 GUI shows progress, rate, estimated total time, ETA and the
+odds of a match. It also scans one seed for every place a pattern occurs and cracks seeds from
+structures seen in a world.
 
 ## Status
 
@@ -13,6 +15,10 @@ progress, rate, estimated total time and ETA.
 | Biomes, point and chunk (volume) paths | done | 12k points + 80 chunk columns, 4 seeds |
 | Terrain heights incl. aquifers (`WORLD_SURFACE_WG`, `OCEAN_FLOOR_WG`) | done | 3,200 columns |
 | Structure placement + start validity (all overworld types) | done | ~1,100 starts, 4 seeds, incl. all 128 stronghold rings |
+| Piece details (igloo basements, shipwreck/portal templates, ocean ruin clusters) | done | 327 pieces |
+| Slime chunks | done | 80k chunks |
+| Chest loot: tables, and chest seeds for buried treasure, shipwrecks, ruined portals, igloos, desert pyramids | done | 432 fills + 138 chests in real worlds (dedicated server) |
+| Ruined portal obsidian and frame completeness | done | 40 portals in real worlds |
 | Mineshaft depth | approximate (placement exact) | M3 |
 | Spawn point, surface blocks, features (trees, cane, cacti, ores), carvers, full blocks | planned | M2 to M4 |
 | CUDA brute-force stage | planned | n/a |
@@ -41,8 +47,13 @@ server jar from Mojang (sha1-checked), extracts worldgen JSON, tags and structur
 ```sh
 python -m sft search "village(within=200) and near('village', 'pillager_outpost', dist=120, within=600)" --count 2000000
 python -m sft search "biome('mushroom_fields', within=300) and monument(within=800)" --mode structure_seeds --count 100000
+python -m sft search "maximize(island(biomes=['mushroom_fields'], within=3000))" --count 100000 --max 10
+python -m sft search "portal_frame(within=150) + loot('ruined_portal', 'obsidian', within=150) >= 10 and village(within=300)"
 python -m sft check 12345 "stronghold(within=1500)"
 python -m sft locate 12345 village --radius 2000
+python -m sft loot 12345 buried_treasure --radius 1500
+python -m sft scan 12345 "cluster('swamp_hut', count=3, dist=128, afk=True, within=0)" --within 20000 --step 256
+python -m sft crack swamp_hut:-1200,840 desert_pyramid:310,-560 pillager_outpost:1040,520 shipwreck:-2160,-1136
 ```
 
 ## Documentation
@@ -63,7 +74,11 @@ python -m sft locate 12345 village --radius 2000
   library this project learned from: structure placement, the R-tree biome search and stronghold
   rings follow the same game algorithms it documents. No cubiomes code is included.
 - The broader seedfinding community (Minecraft@Home, SeedfindingMC) for the 48-bit structure-seed
-  and sister-seed techniques used by the search modes.
+  and sister-seed techniques used by the search modes, and the seed-cracking community
+  ([SeedCrackerX](https://github.com/19MisterX98/SeedcrackerX) and the libraries before it) for the
+  idea of recovering structure seeds from observed structures. The low-bit lifting here was written
+  from the game code; no third-party code is included.
+- The Wilson score interval (E. B. Wilson, 1927) behind the rarity estimate.
 
 Minecraft is a trademark of Mojang Studios. This project is not affiliated with Mojang or Microsoft.
 

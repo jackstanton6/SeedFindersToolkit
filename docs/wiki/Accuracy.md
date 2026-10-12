@@ -14,12 +14,25 @@ the way the server loads them), dumps ground truth for random positions and seed
 | `WORLD_SURFACE_WG` and `OCEAN_FLOOR_WG` heights (incl. aquifers) | 1,600 columns × 2 | 0 mismatches |
 | structure starts in a 97×97-chunk window: every set, placement chunk, chosen variant, start position | ~1,100 rows | 0 mismatches (mineshafts excluded, see below) |
 | stronghold ring positions | 128 per seed | 0 mismatches |
+| first-piece boxes and piece details (igloo basements, shipwreck and portal templates, ocean ruin size and clusters) | 327 rows | 0 mismatches |
+| slime chunks | 80,000 chunks | 0 mismatches |
+| chest contents (`LootTable.fill`): items, counts, enchantments, damage, potions, stews, horns | 432 chests, 18 tables | 0 mismatches |
+| structure chest loot seeds (buried treasure, shipwrecks, ruined portals, igloo basements, desert pyramids) | 138 chests, 4 real worlds | 0 mismatches |
+| ruined portal obsidian after aging (`portal_obsidian`, `portal_frame`) | 40 portals, 4 real worlds | 0 mismatches |
+
+Loot is checked against the official dedicated server, run headless under `cache/oracle-server`
+(you must accept the Minecraft EULA to run it). `tests/loot_oracle.py fill` places chests with
+explicit loot seeds and reads their unpacked contents from the region files; `world SEED...`
+generates the area around the structures the engine predicts and reads every unopened chest's
+`LootTableSeed` and every obsidian block.
 
 Run it yourself (needs Java and `python -m sft data 26.3`):
 
 ```sh
 python tests/run_oracle.py 26.3                 # climate, chunk biomes, heights
-python tests/run_oracle.py 26.3 structures
+python tests/run_oracle.py 26.3 structures slime
+python tests/loot_oracle.py fill                # dedicated server, EULA
+python tests/loot_oracle.py world 0 12345 35467 59104
 cd engine && cargo test --release -- --ignored
 ```
 
@@ -33,6 +46,17 @@ cd engine && cargo test --release -- --ignored
   same thread, which only matters when two biome entries are at exactly the same distance. The
   engine keeps a warm start per evaluation context, so exact ties could in theory resolve
   differently. None appeared in the samples above.
+- **Beached shipwreck chests.** A beached wreck that fits a worldgen region rolls its height in
+  whichever chunk the game happens to generate first, which shifts the loot seeds of chests in that
+  chunk. These chests are flagged `exact: false` (in the oracle worlds 6 of 7 still matched).
+- **Chest y.** Loot seeds and x/z are exact; the y of a chest is estimated (terrain fitting of
+  pieces is not simulated), except for ruined portals.
+- **Chest loot not covered yet:** ocean ruins, jungle temples, villages, outposts, mansions,
+  strongholds, mineshafts, ancient cities, trial chambers, dungeons. Their tables can be rolled
+  (`World.loot(table, seed)`), but the per-structure loot seeds need their piece layouts (M3).
+- **location_check** (abandoned camp and mineshaft tables) is evaluated on noise-biome resolution.
+- **Portal frames** are the 4×5 frame that holds the most template obsidian; for broken templates
+  with several equally good frames the best one for the seed is taken.
 - **Stronghold angles** use the platform `cos`/`sin`. Java may differ in the last bit, which can only
   matter for a value within ~1e-13 of a rounding boundary.
 
@@ -48,4 +72,4 @@ later point query.
 ## Not modelled yet
 
 Spawn point, surface blocks, features (trees, sugar cane, cacti, ores, geodes), carvers, full
-block-level output, Nether and End. See the milestones in AGENTS.md.
+block-level output, Nether and End. See the milestones in AGENTS.md and PLANS.md.

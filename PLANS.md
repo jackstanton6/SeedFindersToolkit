@@ -171,22 +171,20 @@ Progress:
 - [x] Seed cracking (`engine/src/crack.rs`, CLI `crack`, GUI Tools): low-bit lifting, high-bit brute
   force, sister expansion as a list search with the observations. `search --sisters` explorer.
 - [x] Slime chunks, oracle-verified (80k chunks).
-- [ ] Chest loot (in progress): data extraction done (`loot_table`, `enchantment`, item/enchantment
-  tags, `items.json` from the item component report). Findings: the 26.x decoration random is a
-  `WorldgenRandom` over Xoroshiro (`next(bits)` = top bits of `nextLong`); every template block with
-  NBT that becomes a container takes a `nextLong` in (y, x, z) order inside the chunk, then data
-  markers take theirs; beached shipwrecks consume `random` for height only in the first chunk
-  processed. Oracle plan: the dedicated server (fill: setblock chests with explicit seeds, unpack
-  with `item replace ... from`, read region files; seeds: forceload predicted structures and read
-  `LootTableSeed` from region files). Original plan: extract `loot_table`, `enchantment`, item/enchantment tags in `sft/data.py`; dump item
-  max stack sizes and enchantability with a small Java step; port LootTable fill (pools, entries,
-  conditions, functions, slot shuffle and split); loot seeds for buried treasure, shipwrecks,
-  ruined portals, igloo basement, desert pyramid (if its postProcess random use is world-free),
-  ocean ruins. Oracle: real server worlds (eula=true in cache/oracle-server), parse region files
-  for chest `LootTable`/`LootTableSeed`, plus in-process LootTable.fill for item rolls.
-- [ ] Speedrun presets: ruined portal completeness (obsidian count after processors) + chest loot,
-  village/temple/treasure near spawn, stronghold distance. Nether parts wait for M4.
-- [ ] Docs (Query-Language, Search-Modes, GUI, Accuracy) and the wiki examples.
+- [x] Chest loot: `loot.rs` (LootTable.fill over the vanilla JSON; 432 server-unpacked chests over
+  18 tables match) and chest seeds for buried treasure, shipwrecks, ruined portals, igloo
+  basements and desert pyramids (138 real-world chests match; beached wrecks flagged inexact).
+  The 26.x decoration random is a `WorldgenRandom` over Xoroshiro; template containers take a
+  `nextLong` in (y, x, z) order per chunk, then loot data markers. Oracle: `tests/loot_oracle.py`
+  drives the dedicated server (fill: explicit seeds + unpack; world: real generation, region files).
+  Conditions `loot(...)`, `portal_frame`, `portal_obsidian`; CLI `loot`; `World.chests`/`World.loot`.
+- [x] Speedrun presets (overworld): village + portal, near-complete portal frames (obsidian after
+  BlockAgeProcessor, 40 real portals match), frame + chest obsidian, flint and steel, treasure
+  diamonds, shipwreck iron, temple + village, close stronghold. Nether parts wait for M4.
+- [x] Docs: Query-Language, Search-Modes, GUI, Accuracy, README, AGENTS.
+- [ ] Left from this batch: chest seeds for ocean ruins (cluster piece list) and jungle temples
+  (per-block stone randomness before the chests); exact frame definitions for broken portal
+  templates instead of best-frame detection.
 
 Design of the condition core (search.rs):
 - `Cond::{And, Or, Not, Metric{m, min, max}, Cmp{expr, min, max}, Objective{expr, maximize},

@@ -12,17 +12,23 @@ PySide6 GUI. Scope today: Java 26.3, overworld.
 
 ```
 engine/src/
-  rng.rs        Java LCG, Xoroshiro128++, positional factories, MD5 seeding
+  rng.rs        Java LCG, Xoroshiro128++, WorldgenXoro (decoration random), positional factories, MD5 seeding
   noise.rs      26.x float Perlin / smeared Perlin, NoiseStack, NormalNoise, BlendedNoise fbm
   density.rs    density functions: JSON -> rewrite (inline, cache dedupe, axis slicing) -> samplers;
                 both evaluation paths (sample = sampleValue, sample_volume = sampleVolume); Interval
   biome.rs      Climate parameter list + 19-ary R-tree, biome registry, tags
   world.rs      World (data/<ver>), Seeded (= RandomState): biomes, getBaseHeight, columns, aquifer
-  structure.rs  structure sets, placement, findGenerationPoint per type, jigsaw starts, NBT templates
-  search.rs     condition tree, 48-bit pre-check + full eval, native plugin ABI, threaded search
+  structure.rs  structure sets, placement, findGenerationPoint per type, jigsaw starts, NBT templates,
+                piece details and chest loot seeds
+  query.rs      conditions: numeric metrics, expressions, objectives, anywhere; 48-bit pre-check +
+                full eval (Eval); single-seed scan
+  search.rs     threaded search runner (modes, stats, ranked top-N), native plugin ABI
+  crack.rs      structure-seed cracking (low-bit lifting + brute force)
+  loot.rs       LootTable.fill over the vanilla loot JSON
   lib.rs        PyO3 bindings (feature "python") -> sft._engine
 engine/tests/oracle.rs   parity tests against the real game (ignored by default)
 oracle/Oracle.java       ground-truth dumper that runs the actual 26.3 server classes
+tests/loot_oracle.py     loot ground truth from the dedicated server (EULA) and its region files
 sft/            __init__ (World cache, Job, export), query, plugins, data, __main__ (CLI), gui/
 plugins/        example_rust (native cdylib), example_python
 docs/wiki/      user documentation
@@ -35,7 +41,9 @@ pip install -e .                                   # build engine + install (mat
 python -m sft data 26.3                            # one-time: data/26.3 + cache/datagen-26.3
 cd engine && cargo test                            # unit tests
 python tests/run_oracle.py 26.3                    # regenerate ground truth (needs Java)
-python tests/run_oracle.py 26.3 structures
+python tests/run_oracle.py 26.3 structures slime
+python tests/loot_oracle.py fill                   # dedicated server; loot tables
+python tests/loot_oracle.py world 0 12345 35467 59104   # real worlds; chest seeds, portal obsidian
 cd engine && cargo test --release -- --ignored     # parity suite: must stay at zero mismatches
 python tests/test_query.py                         # DSL tests
 python -m sft                                      # GUI
@@ -69,9 +77,10 @@ new behaviour "looks" better.
 
 - Prefer the stdlib and existing helpers. The DSL is parsed with `ast`, plugins use `tomllib`, and
   there is no numpy.
-- New query conditions need the Rust `Cond` variant + `parse` + `pre` (if a 48-bit pre-check exists)
-  + `eval`, a DSL entry in `sft/query.py` (`CALLS`/`POSITIONAL`), a GUI template in `app.py`
-  `TEMPLATES`, and a section in `docs/wiki/Query-Language.md`.
+- New query conditions are metrics: a `Metric` variant in `query.rs` + its `parse` arm (with default
+  min/max) + `shift` + `pre` (if a 48-bit pre-check exists) + `value`, a DSL entry in `sft/query.py`
+  (`POSITIONAL`), a GUI template in `app.py` `TEMPLATES`, and a section in
+  `docs/wiki/Query-Language.md`.
 - The native plugin ABI (`SftHost`, `ABI_VERSION`) is a public contract. Append fields only, and
   bump `ABI_VERSION` on any change.
 - Mojang code and data never go into git: `client-refcode/`, `decompiled/`, `data/`, `cache/` and
@@ -82,6 +91,10 @@ new behaviour "looks" better.
 - **M1 (done):** RNG/noise/density, biomes (both paths), heights + aquifer, all overworld structure
   placement and start validity (oracle-verified), query DSL, threaded search with structure-seed
   mode, PyO3 bindings, GUI, plugins, docs.
+- **Tier 1 batch (done, see PLANS.md):** numeric condition core with scores and record hunts,
+  clusters/chains/overlaps/bingo, biome-grid and island analysis, terrain scans, slime chunks,
+  single-seed scan, cracking, placement stats, rarity, chest loot for five structure types, ruined
+  portal completeness, speedrun presets (all oracle-verified).
 - **M2:** spawn point (`NoiseSpawnFinder`), surface blocks (material rules), block-level biomes
   (`BiomeManager` zoom).
 - **M3:** structure pieces (mineshaft depth exact, village layouts, loot), features and decoration
