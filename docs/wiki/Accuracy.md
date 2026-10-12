@@ -17,7 +17,7 @@ the way the server loads them), dumps ground truth for random positions and seed
 | first-piece boxes and piece details (igloo basements, shipwreck and portal templates, ocean ruin size and clusters) | 327 rows | 0 mismatches |
 | slime chunks | 80,000 chunks | 0 mismatches |
 | chest contents (`LootTable.fill`): items, counts, enchantments, damage, potions, stews, horns | 432 chests, 18 tables | 0 mismatches |
-| structure chest loot seeds (buried treasure, shipwrecks, ruined portals, igloo basements, desert pyramids) | 138 chests, 4 real worlds | 0 mismatches |
+| structure chest loot seeds (buried treasure, shipwrecks, ruined portals, igloo basements, desert pyramids, ocean ruins) | 242 chests, 4 real worlds | 0 mismatches |
 | ruined portal obsidian after aging (`portal_obsidian`, `portal_frame`) | 40 portals, 4 real worlds | 0 mismatches |
 
 Loot is checked against the official dedicated server, run headless under `cache/oracle-server`
@@ -51,7 +51,7 @@ cd engine && cargo test --release -- --ignored
   chunk. These chests are flagged `exact: false` (in the oracle worlds 6 of 7 still matched).
 - **Chest y.** Loot seeds and x/z are exact; the y of a chest is estimated (terrain fitting of
   pieces is not simulated), except for ruined portals.
-- **Chest loot not covered yet:** ocean ruins, jungle temples, villages, outposts, mansions,
+- **Chest loot not covered yet:** jungle temples, villages, outposts, mansions,
   strongholds, mineshafts, ancient cities, trial chambers, dungeons. Their tables can be rolled
   (`World.loot(table, seed)`), but the per-structure loot seeds need their piece layouts (M3).
 - **location_check** (abandoned camp and mineshaft tables) is evaluated on noise-biome resolution.

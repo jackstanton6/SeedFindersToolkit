@@ -199,7 +199,7 @@ mod py {
         }
 
         /// Loot chests of the structures within `radius` of (x, z) (buried treasure, shipwrecks, ruined
-        /// portals, igloo basements, desert pyramids) with their contents: JSON list.
+        /// portals, igloo basements, desert pyramids, ocean ruins) with their contents: JSON list.
         fn chests(&self, py: Python<'_>, seed: i64, name: &str, x: i32, z: i32, radius: i32) -> PyResult<String> {
             let (set, only) = self.w.structures.resolve(name).ok_or_else(|| err(format!("unknown structure '{name}'")))?;
             let loot = self.w.loot.as_ref().map_err(|e| err(e.clone()))?;

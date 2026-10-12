@@ -92,7 +92,7 @@ enum Piece {
     Igloo,
     BuriedTreasure,
     Shipwreck { beached: bool },
-    OceanRuin { large: f32, cluster: f32 },
+    OceanRuin { large: f32, cluster: f32, warm: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -158,7 +158,7 @@ pub struct Hit {
     /// Piece details: "basement", "large", "cluster", "ruins:6", "template:shipwreck/with_mast", ...
     pub tags: Vec<String>,
     /// Loot chests with their LootTableSeed (buried treasure, shipwrecks, ruined portals, igloo
-    /// basements, desert pyramids).
+    /// basements, desert pyramids, ocean ruins).
     pub chests: Vec<Chest>,
 }
 
@@ -249,6 +249,7 @@ fn kind(v: &Value) -> Result<Kind, String> {
         "minecraft:ocean_ruin" => Kind::OnTop(Heightmap::OceanFloorWg, Piece::OceanRuin {
             large: f32_of(&v["large_probability"]),
             cluster: f32_of(&v["cluster_probability"]),
+            warm: v["biome_temp"].as_str() != Some("cold"),
         }),
         "minecraft:shipwreck" => {
             let beached = v["is_beached"].as_bool().unwrap_or(false);
@@ -483,6 +484,13 @@ impl Structures {
         let mut wanted: Vec<String> = PORTALS.iter().chain(GIANT_PORTALS.iter()).map(|p| format!("minecraft:{p}")).collect();
         wanted.extend(SHIPWRECK_OCEAN.iter().chain(SHIPWRECK_BEACHED.iter()).map(|t| format!("minecraft:shipwreck/{t}")));
         wanted.push(IGLOO_LAB.into());
+        for (prefix, n) in [("warm_", 8), ("brick_", 8), ("cracked_", 8), ("mossy_", 8)] {
+            wanted.extend((1..=n).map(|i| format!("minecraft:underwater_ruin/{prefix}{i}")));
+        }
+        for i in [1, 2, 3, 8] {
+            wanted.extend(["big_brick_", "big_cracked_", "big_mossy_"].map(|b| format!("minecraft:underwater_ruin/{b}{i}")));
+        }
+        wanted.extend((4..=7).map(|i| format!("minecraft:underwater_ruin/big_warm_{i}")));
         fn collect(e: &Element, out: &mut Vec<String>) {
             match e {
                 Element::Single(l) => out.push(l.clone()),
@@ -789,7 +797,8 @@ impl Structures {
                     // IglooPieces: the laboratory is the first piece, at start + (0, -3, -2), 3 blocks per ladder lower
                     let t = &self.templates[IGLOO_LAB];
                     let origin = [x0, 90 - 3 - depth * 3, z0 - 2];
-                    *chests = self.template_chests(world_seed, st, t, origin, false, rot, (3, 7), None, true, &|m| (m == "chest").then_some("minecraft:chests/igloo_chest"));
+                    let loot = |m: &str| (m == "chest").then_some(("minecraft:chests/igloo_chest", -1));
+                    *chests = self.template_chests(world_seed, st, &[Placed { t, origin, mirror: false, rot, pivot: (3, 7), loot: &loot }], None, true);
                     chests.iter_mut().for_each(|c| c.pos.1 += y - 90);
                 }
             }
@@ -806,24 +815,45 @@ impl Structures {
                 // first chunk the game happens to process, so its chest seeds are marked inexact
                 let exact = !*beached || tpl.size[0] > 32 || tpl.size[2] > 32;
                 let loot = |m: &str| match m {
-                    "map_chest" => Some("minecraft:chests/shipwreck_map"),
-                    "treasure_chest" => Some("minecraft:chests/shipwreck_treasure"),
-                    "supply_chest" => Some("minecraft:chests/shipwreck_supply"),
+                    "map_chest" => Some(("minecraft:chests/shipwreck_map", -1)),
+                    "treasure_chest" => Some(("minecraft:chests/shipwreck_treasure", -1)),
+                    "supply_chest" => Some(("minecraft:chests/shipwreck_supply", -1)),
                     _ => None,
                 };
-                *chests = self.template_chests(world_seed, st, tpl, [x0, y, z0], false, rot, (4, 15), None, exact, &loot);
+                let piece = Placed { t: tpl, origin: [x0, y, z0], mirror: false, rot, pivot: (4, 15), loot: &loot };
+                *chests = self.template_chests(world_seed, st, &[piece], None, exact);
             }
-            Kind::OnTop(_, Piece::OceanRuin { large, cluster }) => {
+            Kind::OnTop(_, Piece::OceanRuin { large, cluster, warm }) => {
                 let rot = r.next_bound(4);
                 let is_large = r.next_float() <= *large;
-                r.next_bound(if is_large { 4 } else { 8 }); // template
+                let idx = r.next_bound(if is_large { 4 } else { 8 }); // template
+                let mut ruins = vec![((x0, z0), rot, idx, is_large)];
                 if is_large {
                     tags.push("large".into());
                     if r.next_float() <= *cluster {
+                        ruins.extend(cluster_ruins(r, rot, x0, z0).into_iter().map(|(p, rot, idx)| (p, rot, idx, false)));
                         tags.push("cluster".into());
-                        tags.push(format!("ruins:{}", 1 + cluster_ruins(r, rot, x0, z0)));
+                        tags.push(format!("ruins:{}", ruins.len()));
                     }
                 }
+                // OceanRuinPieces.addPiece: a warm ruin is one template; a cold one is brick, cracked and
+                // mossy pieces at the same place (each sets the chest again; the last one wins)
+                let big = |m: &str| (m == "chest").then_some(("minecraft:chests/underwater_ruin_big", 0));
+                let small = |m: &str| (m == "chest").then_some(("minecraft:chests/underwater_ruin_small", 0));
+                let mut pieces = vec![];
+                for ((px, pz), rot, idx, large) in ruins {
+                    let names: Vec<String> = match (*warm, large) {
+                        (true, true) => vec![format!("big_warm_{}", idx + 4)],
+                        (true, false) => vec![format!("warm_{}", idx + 1)],
+                        (false, true) => ["big_brick_", "big_cracked_", "big_mossy_"].iter().map(|b| format!("{b}{}", [1, 2, 3, 8][idx as usize])).collect(),
+                        (false, false) => ["brick_", "cracked_", "mossy_"].iter().map(|b| format!("{b}{}", idx + 1)).collect(),
+                    };
+                    for n in names {
+                        let t = &self.templates[&format!("minecraft:underwater_ruin/{n}")];
+                        pieces.push(Placed { t, origin: [px, y, pz], mirror: false, rot, pivot: (0, 0), loot: if large { &big } else { &small } });
+                    }
+                }
+                *chests = self.template_chests(world_seed, st, &pieces, None, true);
             }
             Kind::RuinedPortal(_) => {
                 // RuinedPortalPiece places everything from the chunk holding its box centre
@@ -834,7 +864,8 @@ impl Structures {
                     let mirror = tags.iter().any(|t| t == "mirrored");
                     let rot: i32 = rot.parse().unwrap_or(0);
                     let pivot = (t.size[0] / 2, t.size[2] / 2);
-                    *chests = self.template_chests(world_seed, st, t, [x0, b[1], z0], mirror, rot, pivot, Some((center.0 >> 4, center.1 >> 4)), true, &|_| None);
+                    let piece = Placed { t, origin: [x0, b[1], z0], mirror, rot, pivot, loot: &|_| None };
+                    *chests = self.template_chests(world_seed, st, &[piece], Some((center.0 >> 4, center.1 >> 4)), true);
                     // BlockAgeProcessor: each obsidian turns crying with LegacyRandom(Mth.getSeed(pos)) < 0.15.
                     // Crying obsidian is not counted: the netherrack spread after placement may overwrite it.
                     let plain = |p: &[i32; 3]| {
@@ -861,35 +892,46 @@ impl Structures {
         r
     }
 
-    /// Loot chests of one template piece. In each chunk the piece touches, placeInWorld draws one
-    /// nextLong per container it places (template order), then each loot data marker draws one for
-    /// the chest below it. `only_chunk`: the whole piece is placed from that chunk (ruined portals).
-    #[allow(clippy::too_many_arguments)]
-    fn template_chests(&self, world_seed: i64, st: usize, t: &Template, origin: [i32; 3], mirror: bool, rot: i32, pivot: (i32, i32),
-                       only_chunk: Option<(i32, i32)>, exact: bool, loot: &dyn Fn(&str) -> Option<&'static str>) -> Vec<Chest> {
-        let at = |p: [i32; 3]| {
-            let q = transform(p, mirror, rot, pivot);
-            [q[0] + origin[0], q[1] + origin[1], q[2] + origin[2]]
-        };
-        let containers: Vec<([i32; 3], &str)> = t.containers.iter().map(|(p, l)| (at(*p), l.as_str())).collect();
-        let markers: Vec<([i32; 3], &str)> = t.markers.iter().filter_map(|(p, m)| loot(m).map(|l| (at(*p), l))).collect();
+    /// Loot chests of template pieces (in piece order). In each chunk, every piece touching it draws
+    /// one nextLong per container placeInWorld places (template order), then one per loot data
+    /// marker (whose chest is `dy` blocks from the marker; a later draw for the same chest wins).
+    /// `only_chunk`: the whole piece is placed from that chunk (ruined portals).
+    fn template_chests(&self, world_seed: i64, st: usize, pieces: &[Placed], only_chunk: Option<(i32, i32)>, exact: bool) -> Vec<Chest> {
+        type Spots<'a> = Vec<([i32; 3], &'a str)>;
+        let placed: Vec<(Spots, Spots)> = pieces
+            .iter()
+            .map(|pc| {
+                let at = |p: [i32; 3]| {
+                    let q = transform(p, pc.mirror, pc.rot, pc.pivot);
+                    [q[0] + pc.origin[0], q[1] + pc.origin[1], q[2] + pc.origin[2]]
+                };
+                let containers = pc.t.containers.iter().map(|(p, l)| (at(*p), l.as_str())).collect();
+                let markers = pc.t.markers.iter().filter_map(|(p, m)| (pc.loot)(m).map(|(l, dy)| {
+                    let q = at(*p);
+                    ([q[0], q[1] + dy, q[2]], l)
+                })).collect();
+                (containers, markers)
+            })
+            .collect();
         let chunk_of = |p: [i32; 3]| only_chunk.unwrap_or((p[0] >> 4, p[2] >> 4));
-        let mut chunks: Vec<(i32, i32)> = containers.iter().chain(&markers).map(|(p, _)| chunk_of(*p)).collect();
+        let mut chunks: Vec<(i32, i32)> = placed.iter().flat_map(|(c, m)| c.iter().chain(m)).map(|(p, _)| chunk_of(*p)).collect();
         chunks.sort();
         chunks.dedup();
         let mut out: Vec<Chest> = vec![];
         for c in chunks {
             let mut r = self.feature_random(world_seed, st, c);
-            for (p, table) in containers.iter().filter(|(p, _)| chunk_of(*p) == c) {
-                let seed = r.next_long();
-                if !table.is_empty() {
-                    out.push(Chest { pos: (p[0], p[1], p[2]), table: table.to_string(), seed, exact });
+            for (containers, markers) in &placed {
+                for (p, table) in containers.iter().filter(|(p, _)| chunk_of(*p) == c) {
+                    let seed = r.next_long();
+                    if !table.is_empty() {
+                        out.push(Chest { pos: (p[0], p[1], p[2]), table: table.to_string(), seed, exact });
+                    }
                 }
-            }
-            for (p, table) in markers.iter().filter(|(p, _)| chunk_of(*p) == c) {
-                let pos = (p[0], p[1] - 1, p[2]);
-                out.retain(|ch| ch.pos != pos);
-                out.push(Chest { pos, table: table.to_string(), seed: r.next_long(), exact });
+                for (p, table) in markers.iter().filter(|(p, _)| chunk_of(*p) == c) {
+                    let pos = (p[0], p[1], p[2]);
+                    out.retain(|ch| ch.pos != pos);
+                    out.push(Chest { pos, table: table.to_string(), seed: r.next_long(), exact });
+                }
             }
         }
         out
@@ -1048,8 +1090,18 @@ fn scattered_box(x: i32, z: i32, dir: i32, w: i32, h: i32, d: i32) -> [i32; 6] {
     if dir % 2 == 0 { [x, 64, z, x + w - 1, 64 + h - 1, z + d - 1] } else { [x, 64, z, x + d - 1, 64 + h - 1, z + w - 1] }
 }
 
-/// OceanRuinPieces.addClusterRuins: how many extra ruins the cluster adds.
-fn cluster_ruins(r: &mut JavaRandom, rot: i32, x: i32, z: i32) -> i32 {
+/// A template piece as placed, and what its data markers make: (loot table, chest y offset).
+struct Placed<'a> {
+    t: &'a Template,
+    origin: [i32; 3],
+    mirror: bool,
+    rot: i32,
+    pivot: (i32, i32),
+    loot: &'a dyn Fn(&str) -> Option<(&'static str, i32)>,
+}
+
+/// OceanRuinPieces.addClusterRuins: the small ruins a cluster adds, ((x, z), rotation, template index).
+fn cluster_ruins(r: &mut JavaRandom, rot: i32, x: i32, z: i32) -> Vec<((i32, i32), i32, i32)> {
     let ni = |r: &mut JavaRandom, a: i32, b: i32| if a >= b { a } else { r.next_bound(b - a + 1) + a };
     let corner = transform([15, 0, 15], false, rot, (0, 0));
     let parent = [x.min(x + corner[0]), z.min(z + corner[2]), x.max(x + corner[0]), z.max(z + corner[2])];
@@ -1061,17 +1113,17 @@ fn cluster_ruins(r: &mut JavaRandom, rot: i32, x: i32, z: i32) -> i32 {
         (px, bz + dz + ni(r, c, zm))
     }).collect();
     let count = ni(r, 4, 8);
-    let mut added = 0;
+    let mut added = vec![];
     for _ in 0..count {
         if positions.is_empty() {
             continue;
         }
         let (px, pz) = positions.remove(r.next_bound(positions.len() as i32) as usize);
-        let c = transform([5, 0, 6], false, r.next_bound(4), (0, 0));
+        let rot = r.next_bound(4);
+        let c = transform([5, 0, 6], false, rot, (0, 0));
         let (ax, az, cx2, cz2) = (px.min(px + c[0]), pz.min(pz + c[2]), px.max(px + c[0]), pz.max(pz + c[2]));
         if !(cx2 >= parent[0] && ax <= parent[2] && cz2 >= parent[1] && az <= parent[3]) {
-            r.next_bound(8); // small ruin template
-            added += 1;
+            added.push(((px, pz), rot, r.next_bound(8))); // small ruin template
         }
     }
     added

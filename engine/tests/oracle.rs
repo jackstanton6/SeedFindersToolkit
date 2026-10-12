@@ -227,12 +227,14 @@ fn structure_chests_match() {
             (c[0].as_i64().unwrap() as i32, c[2].as_i64().unwrap() as i32, c[4].as_str().unwrap().to_string(), c[5].as_i64().unwrap())
         }).collect();
         let mut ev = sft_engine::query::Eval::new(w, seed, &[]);
-        for name in ["buried_treasure", "ruined_portal", "shipwreck", "igloo", "desert_pyramid"] {
+        for name in ["buried_treasure", "ruined_portal", "shipwreck", "igloo", "desert_pyramid", "ocean_ruin"] {
             let (set, only) = w.structures.resolve(name).unwrap();
             for h in ev.instances(set, only, (0, 0), r) {
                 for c in &h.chests {
-                    let found = real.iter().find(|x| (x.0, x.1) == (c.pos.0, c.pos.2));
-                    let ok = found.is_some_and(|x| x.2 == c.table && x.3 == c.seed);
+                    // same column and table (suspicious sand/gravel can share the column)
+                    let same: Vec<_> = real.iter().filter(|x| (x.0, x.1) == (c.pos.0, c.pos.2) && x.2 == c.table).collect();
+                    let found = same.first();
+                    let ok = same.iter().any(|x| x.3 == c.seed);
                     if !c.exact {
                         inexact += 1;
                         inexact_ok += ok as i32;

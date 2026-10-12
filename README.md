@@ -17,7 +17,7 @@ structures seen in a world.
 | Structure placement + start validity (all overworld types) | done | ~1,100 starts, 4 seeds, incl. all 128 stronghold rings |
 | Piece details (igloo basements, shipwreck/portal templates, ocean ruin clusters) | done | 327 pieces |
 | Slime chunks | done | 80k chunks |
-| Chest loot: tables, and chest seeds for buried treasure, shipwrecks, ruined portals, igloos, desert pyramids | done | 432 fills + 138 chests in real worlds (dedicated server) |
+| Chest loot: tables, and chest seeds for buried treasure, shipwrecks, ruined portals, igloos, desert pyramids, ocean ruins | done | 432 fills + 242 chests in real worlds (dedicated server) |
 | Ruined portal obsidian and frame completeness | done | 40 portals in real worlds |
 | Mineshaft depth | approximate (placement exact) | M3 |
 | Spawn point, surface blocks, features (trees, cane, cacti, ores), carvers, full blocks | planned | M2 to M4 |
