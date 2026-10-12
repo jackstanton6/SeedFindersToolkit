@@ -212,6 +212,49 @@ fn loot_fill_matches() {
     assert_eq!(bad, 0, "{bad}/{} chests differ", cases.len());
 }
 
+/// Structure chests in real worlds (tests/loot_oracle.py world): every chest the engine predicts
+/// must exist at its (x, z) with the same loot table and LootTableSeed. y is not compared.
+#[test]
+#[ignore]
+fn structure_chests_match() {
+    let w = world();
+    let (mut checked, mut bad, mut inexact, mut inexact_ok) = (0, 0, 0, 0);
+    let mut by_name = std::collections::BTreeMap::new();
+    for f in fixtures("loot-world") {
+        let seed = f["seed"].as_i64().unwrap();
+        let r = f["radius"].as_i64().unwrap() as i32;
+        let real: Vec<(i32, i32, String, i64)> = f["chests"].as_array().unwrap().iter().map(|c| {
+            (c[0].as_i64().unwrap() as i32, c[2].as_i64().unwrap() as i32, c[4].as_str().unwrap().to_string(), c[5].as_i64().unwrap())
+        }).collect();
+        let mut ev = sft_engine::query::Eval::new(w, seed, &[]);
+        for name in ["buried_treasure", "ruined_portal", "shipwreck", "igloo", "desert_pyramid"] {
+            let (set, only) = w.structures.resolve(name).unwrap();
+            for h in ev.instances(set, only, (0, 0), r) {
+                for c in &h.chests {
+                    let found = real.iter().find(|x| (x.0, x.1) == (c.pos.0, c.pos.2));
+                    let ok = found.is_some_and(|x| x.2 == c.table && x.3 == c.seed);
+                    if !c.exact {
+                        inexact += 1;
+                        inexact_ok += ok as i32;
+                        continue;
+                    }
+                    *by_name.entry(name).or_insert(0) += 1;
+                    if !ok {
+                        if bad < 10 {
+                            eprintln!("seed {seed} {} at {:?} tags {:?}: engine {} {} real {found:?}", w.structures.structures[h.structure].name, c.pos, h.tags, c.table, c.seed);
+                        }
+                        bad += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    eprintln!("{checked} chests checked {by_name:?}; {inexact_ok}/{inexact} inexact (beached) ones match too");
+    assert!(checked > 0);
+    assert_eq!(bad, 0, "{bad}/{checked} chest seeds differ");
+}
+
 #[test]
 #[ignore]
 fn slime_chunks_match() {

@@ -4,7 +4,7 @@
 
 use crate::biome::{contains, BiomeSet, Biomes};
 use crate::density::{f32_of, ns};
-use crate::rng::{shuffle, JavaRandom, Rng};
+use crate::rng::{shuffle, JavaRandom, Rng, WorldgenXoro};
 use crate::world::{json_dir, BiomeCtx, Block, Heightmap, Seeded};
 use flate2::read::GzDecoder;
 use serde_json::Value;
@@ -113,6 +113,9 @@ pub struct Structure {
     pub name: String,
     kind: Kind,
     pub biomes: BiomeSet,
+    /// (index, step) for ChunkGenerator.applyBiomeDecoration's feature seed: index among all
+    /// registry structures (sorted ids) of the same generation step.
+    decoration: (i32, i32),
 }
 
 impl Structure {
@@ -137,6 +140,7 @@ struct Pool {
 
 struct Template {
     size: [i32; 3],
+    containers: Vec<([i32; 3], String)>, // blocks with NBT that are loot containers (+ LootTable), (y, x, z) order
     markers: Vec<([i32; 3], String)>, // data markers (structure blocks in DATA mode), sorted by (y, x, z)
     jigsaws: Vec<([i32; 3], String, i32)>, // (pos, name, selection priority), sorted by (y, x, z)
 }
@@ -151,6 +155,19 @@ pub struct Hit {
     pub bbox: Option<[i32; 6]>,
     /// Piece details: "basement", "large", "cluster", "ruins:6", "template:shipwreck/with_mast", ...
     pub tags: Vec<String>,
+    /// Loot chests with their LootTableSeed (buried treasure, shipwrecks, ruined portals, igloo
+    /// basements, desert pyramids).
+    pub chests: Vec<Chest>,
+}
+
+/// A loot chest a structure places. The seed is exact unless `exact` is false; y is approximate
+/// except for ruined portals (terrain fitting is not simulated).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chest {
+    pub pos: (i32, i32, i32),
+    pub table: String,
+    pub seed: i64,
+    pub exact: bool,
 }
 
 pub struct Structures {
@@ -168,6 +185,16 @@ const PORTALS: [&str; 10] = [
     "ruined_portal/portal_6", "ruined_portal/portal_7", "ruined_portal/portal_8", "ruined_portal/portal_9", "ruined_portal/portal_10",
 ];
 const GIANT_PORTALS: [&str; 3] = ["ruined_portal/giant_portal_1", "ruined_portal/giant_portal_2", "ruined_portal/giant_portal_3"];
+/// GenerationStep.Decoration, in ordinal order.
+const STEPS: [&str; 11] = [
+    "raw_generation", "lakes", "local_modifications", "underground_structures", "surface_structures", "strongholds",
+    "underground_ores", "underground_decoration", "fluid_springs", "vegetal_decoration", "top_layer_modification",
+];
+/// Block entities that are RandomizableContainers (they take a LootTableSeed when a template places them).
+const CONTAINERS: [&str; 8] = [
+    "minecraft:chest", "minecraft:trapped_chest", "minecraft:barrel", "minecraft:dispenser", "minecraft:dropper",
+    "minecraft:hopper", "minecraft:decorated_pot", "minecraft:crafter",
+];
 
 // ------------------------------------------------------------------------------------------------
 // Loading
@@ -352,9 +379,14 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
     };
     let mut jigsaws = vec![];
     let mut markers = vec![];
+    let mut containers = vec![];
     for blk in root.get("blocks").map(|b| b.list()).unwrap_or(&[]) {
         let state = blk.get("state").map_or(0, Nbt::int) as usize;
         let name = palette.get(state).and_then(|p| p.get("id").or(p.get("Name"))).map_or("", Nbt::str);
+        if let (true, Some(nbt)) = (CONTAINERS.contains(&name) || name.ends_with("shulker_box"), blk.get("nbt")) {
+            let p = blk.get("pos").map(|p| p.list()).unwrap_or(&[]);
+            containers.push(([p[0].int(), p[1].int(), p[2].int()], nbt.get("LootTable").map_or("", Nbt::str).to_string()));
+        }
         if let (true, Some(nbt)) = (name == "minecraft:structure_block", blk.get("nbt")) {
             if nbt.get("mode").map_or("", Nbt::str) == "DATA" {
                 let p = blk.get("pos").map(|p| p.list()).unwrap_or(&[]);
@@ -374,7 +406,8 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
     }
     jigsaws.sort_by_key(|(p, ..)| (p[1], p[0], p[2])); // StructureTemplate.buildInfoList order
     markers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
-    Ok(Template { size, jigsaws, markers })
+    containers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
+    Ok(Template { size, jigsaws, markers, containers })
 }
 
 impl Structures {
@@ -384,7 +417,13 @@ impl Structures {
         let mut by_name = HashMap::new();
         for (id, v) in json_dir(&wg.join("structure"))? {
             by_name.insert(id.clone(), structures.len());
-            structures.push(Structure { kind: kind(&v)?, biomes: biomes.set(&v["biomes"]), name: id });
+            let step = STEPS.iter().position(|s| Some(*s) == v["step"].as_str()).unwrap_or(4) as i32;
+            structures.push(Structure { kind: kind(&v)?, biomes: biomes.set(&v["biomes"]), name: id, decoration: (0, step) });
+        }
+        let mut next = [0; STEPS.len()];
+        for s in &mut structures {
+            s.decoration.0 = next[s.decoration.1 as usize];
+            next[s.decoration.1 as usize] += 1;
         }
         let raw = json_dir(&wg.join("structure_set"))?;
         let set_by_name: HashMap<String, usize> = raw.iter().enumerate().map(|(i, (id, _))| (id.clone(), i)).collect();
@@ -435,6 +474,7 @@ impl Structures {
         // Templates are only needed for start pieces and ruined portals; load those up front.
         let mut wanted: Vec<String> = PORTALS.iter().chain(GIANT_PORTALS.iter()).map(|p| format!("minecraft:{p}")).collect();
         wanted.extend(SHIPWRECK_OCEAN.iter().chain(SHIPWRECK_BEACHED.iter()).map(|t| format!("minecraft:shipwreck/{t}")));
+        wanted.push(IGLOO_LAB.into());
         fn collect(e: &Element, out: &mut Vec<String>) {
             match e {
                 Element::Single(l) => out.push(l.clone()),
@@ -614,8 +654,9 @@ impl Structures {
         if !contains(self.structures[st].biomes, s.biome(bc, p.0 >> 2, p.1 >> 2, p.2 >> 2)) {
             return None;
         }
-        self.piece_details(&mut r, st, cx, cz, &mut bbox, &mut tags);
-        Some(Hit { structure: st, chunk: (cx, cz), pos: p, bbox, tags })
+        let mut chests = vec![];
+        self.piece_details(&mut r, s.seed, st, (cx, cz), p.1, &mut bbox, &mut tags, &mut chests);
+        Some(Hit { structure: st, chunk: (cx, cz), pos: p, bbox, tags, chests })
     }
 
     #[allow(clippy::type_complexity)]
@@ -711,28 +752,58 @@ impl Structures {
         }
     }
 
-    /// The first random calls of each simple piece generator (generatePieces), for boxes and details.
-    fn piece_details(&self, r: &mut JavaRandom, st: usize, cx: i32, cz: i32, bbox: &mut Option<[i32; 6]>, tags: &mut Vec<String>) {
+    /// The first random calls of each simple piece generator (generatePieces), for boxes, details
+    /// and loot chests.
+    #[allow(clippy::too_many_arguments)]
+    fn piece_details(&self, r: &mut JavaRandom, world_seed: i64, st: usize, (cx, cz): (i32, i32), y: i32, bbox: &mut Option<[i32; 6]>, tags: &mut Vec<String>, chests: &mut Vec<Chest>) {
         let (x0, z0) = (cx * 16, cz * 16);
         match &self.structures[st].kind {
-            Kind::SinglePiece(w, h, d) => *bbox = Some(scattered_box(x0, z0, r.next_bound(4), *w, *h, *d)),
+            Kind::SinglePiece(w, h, d) => {
+                let dir = r.next_bound(4);
+                let b = scattered_box(x0, z0, dir, *w, *h, *d);
+                *bbox = Some(b);
+                if self.structures[st].name == "minecraft:desert_pyramid" {
+                    *chests = self.pyramid_chests(world_seed, st, b, dir, y);
+                }
+            }
+            Kind::OnTop(_, Piece::BuriedTreasure) => {
+                let mut fr = self.feature_random(world_seed, st, (cx, cz));
+                chests.push(Chest { pos: (x0 + 9, y, z0 + 9), table: "minecraft:chests/buried_treasure".into(), seed: fr.next_long(), exact: true });
+            }
             Kind::OnTop(_, Piece::SwampHut) => *bbox = Some(scattered_box(x0, z0, r.next_bound(4), 7, 7, 9)),
             Kind::Monument => *bbox = Some([x0 - 29, 39, z0 - 29, x0 + 28, 61, z0 + 28]),
             Kind::OnTop(_, Piece::Igloo) => {
-                r.next_bound(4); // rotation
+                let rot = r.next_bound(4);
                 if r.next_double() < 0.5 {
+                    let depth = r.next_bound(8) + 4;
                     tags.push("basement".into());
-                    tags.push(format!("ladders:{}", r.next_bound(8) + 4));
+                    tags.push(format!("ladders:{depth}"));
+                    // IglooPieces: the laboratory is the first piece, at start + (0, -3, -2), 3 blocks per ladder lower
+                    let t = &self.templates[IGLOO_LAB];
+                    let origin = [x0, 90 - 3 - depth * 3, z0 - 2];
+                    *chests = self.template_chests(world_seed, st, t, origin, false, rot, (3, 7), None, true, &|m| (m == "chest").then_some("minecraft:chests/igloo_chest"));
+                    chests.iter_mut().for_each(|c| c.pos.1 += y - 90);
                 }
             }
             Kind::OnTop(_, Piece::Shipwreck { beached }) => {
-                r.next_bound(4); // rotation
+                let rot = r.next_bound(4);
                 let list: &[&str] = if *beached { &SHIPWRECK_BEACHED } else { &SHIPWRECK_OCEAN };
                 let t = list[r.next_bound(list.len() as i32) as usize];
                 tags.push(format!("template:shipwreck/{t}"));
-                for (_, m) in self.templates.get(&format!("minecraft:shipwreck/{t}")).map_or(&[][..], |t| &t.markers) {
+                let tpl = &self.templates[&format!("minecraft:shipwreck/{t}")];
+                for (_, m) in &tpl.markers {
                     tags.push(format!("chest:{m}"));
                 }
+                // ponytail: a beached wreck that fits a worldgen region draws its height (random) in the
+                // first chunk the game happens to process, so its chest seeds are marked inexact
+                let exact = !*beached || tpl.size[0] > 32 || tpl.size[2] > 32;
+                let loot = |m: &str| match m {
+                    "map_chest" => Some("minecraft:chests/shipwreck_map"),
+                    "treasure_chest" => Some("minecraft:chests/shipwreck_treasure"),
+                    "supply_chest" => Some("minecraft:chests/shipwreck_supply"),
+                    _ => None,
+                };
+                *chests = self.template_chests(world_seed, st, tpl, [x0, y, z0], false, rot, (4, 15), None, exact, &loot);
             }
             Kind::OnTop(_, Piece::OceanRuin { large, cluster }) => {
                 let rot = r.next_bound(4);
@@ -746,8 +817,87 @@ impl Structures {
                     }
                 }
             }
+            Kind::RuinedPortal(_) => {
+                // RuinedPortalPiece places everything from the chunk holding its box centre
+                let tag = |k: &str| tags.iter().find_map(|t| t.strip_prefix(k)).map(str::to_string);
+                if let (Some(name), Some(rot), Some(b)) = (tag("template:"), tag("rotation:"), *bbox) {
+                    let t = &self.templates[&format!("minecraft:{name}")];
+                    let center = (b[0] + (b[3] - b[0] + 1) / 2, b[2] + (b[5] - b[2] + 1) / 2);
+                    let mirror = tags.iter().any(|t| t == "mirrored");
+                    let rot: i32 = rot.parse().unwrap_or(0);
+                    let pivot = (t.size[0] / 2, t.size[2] / 2);
+                    *chests = self.template_chests(world_seed, st, t, [x0, b[1], z0], mirror, rot, pivot, Some((center.0 >> 4, center.1 >> 4)), true, &|_| None);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// WorldgenRandom(Xoroshiro) as applyBiomeDecoration seeds it for this structure in `chunk`.
+    fn feature_random(&self, world_seed: i64, st: usize, chunk: (i32, i32)) -> WorldgenXoro {
+        let mut r = WorldgenXoro::new(0);
+        let d = r.set_decoration_seed(world_seed, chunk.0 * 16, chunk.1 * 16);
+        let (index, step) = self.structures[st].decoration;
+        r.set_feature_seed(d, index, step);
+        r
+    }
+
+    /// Loot chests of one template piece. In each chunk the piece touches, placeInWorld draws one
+    /// nextLong per container it places (template order), then each loot data marker draws one for
+    /// the chest below it. `only_chunk`: the whole piece is placed from that chunk (ruined portals).
+    #[allow(clippy::too_many_arguments)]
+    fn template_chests(&self, world_seed: i64, st: usize, t: &Template, origin: [i32; 3], mirror: bool, rot: i32, pivot: (i32, i32),
+                       only_chunk: Option<(i32, i32)>, exact: bool, loot: &dyn Fn(&str) -> Option<&'static str>) -> Vec<Chest> {
+        let at = |p: [i32; 3]| {
+            let q = transform(p, mirror, rot, pivot);
+            [q[0] + origin[0], q[1] + origin[1], q[2] + origin[2]]
+        };
+        let containers: Vec<([i32; 3], &str)> = t.containers.iter().map(|(p, l)| (at(*p), l.as_str())).collect();
+        let markers: Vec<([i32; 3], &str)> = t.markers.iter().filter_map(|(p, m)| loot(m).map(|l| (at(*p), l))).collect();
+        let chunk_of = |p: [i32; 3]| only_chunk.unwrap_or((p[0] >> 4, p[2] >> 4));
+        let mut chunks: Vec<(i32, i32)> = containers.iter().chain(&markers).map(|(p, _)| chunk_of(*p)).collect();
+        chunks.sort();
+        chunks.dedup();
+        let mut out: Vec<Chest> = vec![];
+        for c in chunks {
+            let mut r = self.feature_random(world_seed, st, c);
+            for (p, table) in containers.iter().filter(|(p, _)| chunk_of(*p) == c) {
+                let seed = r.next_long();
+                if !table.is_empty() {
+                    out.push(Chest { pos: (p[0], p[1], p[2]), table: table.to_string(), seed, exact });
+                }
+            }
+            for (p, table) in markers.iter().filter(|(p, _)| chunk_of(*p) == c) {
+                let pos = (p[0], p[1] - 1, p[2]);
+                out.retain(|ch| ch.pos != pos);
+                out.push(Chest { pos, table: table.to_string(), seed: r.next_long(), exact });
+            }
+        }
+        out
+    }
+
+    /// DesertPyramidPiece: every chunk draws nextInt(3) (height offset) first, then one nextLong
+    /// per chest it holds, in NORTH, EAST, SOUTH, WEST order. `dir` is the piece orientation.
+    fn pyramid_chests(&self, world_seed: i64, st: usize, b: [i32; 6], dir: i32, y: i32) -> Vec<Chest> {
+        let world = |lx: i32, lz: i32| match dir {
+            0 => (b[0] + lx, b[5] - lz),
+            2 => (b[0] + lx, b[2] + lz),
+            3 => (b[3] - lz, b[2] + lx),
+            _ => (b[0] + lz, b[2] + lx),
+        };
+        let pos: Vec<(i32, i32)> = [(10, 8), (12, 10), (10, 12), (8, 10)].iter().map(|&(lx, lz)| world(lx, lz)).collect();
+        let mut chunks: Vec<(i32, i32)> = pos.iter().map(|p| (p.0 >> 4, p.1 >> 4)).collect();
+        chunks.sort();
+        chunks.dedup();
+        let mut out = vec![];
+        for c in chunks {
+            let mut r = self.feature_random(world_seed, st, c);
+            r.next_bound(3);
+            for p in pos.iter().filter(|p| (p.0 >> 4, p.1 >> 4) == c) {
+                out.push(Chest { pos: (p.0, y - 11, p.1), table: "minecraft:chests/desert_pyramid".into(), seed: r.next_long(), exact: true });
+            }
+        }
+        out
     }
 
     fn named_jigsaw(&self, el: &Element, name: &str, pos: [i32; 3], rot: i32, r: &mut JavaRandom) -> Option<[i32; 3]> {
@@ -805,7 +955,7 @@ impl Structures {
         };
         let columns: Vec<Vec<Block>> = [(b[0], b[2]), (b[3], b[2]), (b[0], b[5]), (b[3], b[5])].iter().map(|&(x, z)| s.column(x, z)).collect();
         let at = |col: &Vec<Block>, y: i32| col.get((y - s.w.min_y) as usize).copied().filter(|_| y >= s.w.min_y).unwrap_or(Block::Air);
-        let mut tags = vec![format!("template:{name}"), format!("placement:{}", setup.placement.name())];
+        let mut tags = vec![format!("template:{name}"), format!("placement:{}", setup.placement.name()), format!("rotation:{rot}")];
         tags.extend([(giant, "giant"), (mirror, "mirrored"), (air, "air_pocket")].iter().filter(|t| t.0).map(|t| t.1.to_string()));
         let done = |y: i32| Some(((cx * 16, y, cz * 16), Some([b[0], b[1] + y, b[2], b[3], b[4] + y, b[5]]), tags.clone()));
         let mut y = new_y;
@@ -829,6 +979,7 @@ impl Structures {
 // Helpers
 // ------------------------------------------------------------------------------------------------
 
+const IGLOO_LAB: &str = "minecraft:igloo/bottom";
 const SHIPWRECK_BEACHED: [&str; 11] = [
     "with_mast", "sideways_full", "sideways_fronthalf", "sideways_backhalf", "rightsideup_full", "rightsideup_fronthalf",
     "rightsideup_backhalf", "with_mast_degraded", "rightsideup_full_degraded", "rightsideup_fronthalf_degraded", "rightsideup_backhalf_degraded",

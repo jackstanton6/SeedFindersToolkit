@@ -928,7 +928,7 @@ impl<'w> Eval<'w> {
             let elong = w.max(h) / w.min(h);
             // a lagoon: a water component enclosed by this island alone
             let enclosed = |wc: &Vec<usize>| wc.iter().all(|&k| !g.on_border(k) && g.neighbours(k).all(|nb| member(nb) || !land[nb]));
-            if circ < min_circ || elong > max_elong || (lagoon && !water.iter().any(|wc| wc.iter().any(|&k| g.neighbours(k).any(|nb| member(nb))) && enclosed(wc))) {
+            if circ < min_circ || elong > max_elong || (lagoon && !water.iter().any(|wc| wc.iter().any(|&k| g.neighbours(k).any(&member)) && enclosed(wc))) {
                 continue;
             }
             let blocks = area * (step as f64).powi(2);
