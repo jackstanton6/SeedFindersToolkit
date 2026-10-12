@@ -11,6 +11,7 @@ The text form is a Python expression, parsed with `ast` and never evaluated:
     nearest("village") < 400 and cluster("swamp_hut", count=3, dist=128, within=5000)
     village(within=500) + 2 * pillager_outpost(within=500) >= 3
     maximize(biome_area("mushroom_fields", window=1024)) and anywhere(slime(radius=24) >= 6, within=500)
+    loot("buried_treasure", "diamond", within=400) >= 2 and portal_frame(within=200) >= 8
 
 Every condition is also a number (count, distance, area, height, ...): comparisons and arithmetic
 use the number, a bare condition passes on its default range (e.g. count >= 1).
@@ -25,7 +26,8 @@ POSITIONAL = {
     "structure": ["name"], "nearest": ["name"], "near": ["a", "b"], "cluster": ["names"], "chain": ["names"],
     "overlap": ["a", "b"], "bingo": ["names"], "biome": ["name"], "biome_area": ["name"], "biome_count": [],
     "biome_border": ["a", "b"], "island": [], "climate": ["param"], "height": [], "peak": [], "trench": [],
-    "cliff": [], "overhang": [], "void": [], "lake": ["fluid"], "slime": [],
+    "cliff": [], "overhang": [], "void": [], "lake": ["fluid"], "slime": [], "loot": ["name", "item"], "portal_frame": [],
+    "portal_obsidian": [],
     "native": ["plugin", "filter"], "py": ["name"], "maximize": ["expr"], "minimize": ["expr"], "anywhere": ["cond"],
 }
 CALLS = set(POSITIONAL)

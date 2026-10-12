@@ -198,6 +198,26 @@ mod py {
             Ok(Value::Array(chest.iter().map(|s| s.as_ref().map_or(Value::Null, |s| s.to_json())).collect()).to_string())
         }
 
+        /// Loot chests of the structures within `radius` of (x, z) (buried treasure, shipwrecks, ruined
+        /// portals, igloo basements, desert pyramids) with their contents: JSON list.
+        fn chests(&self, py: Python<'_>, seed: i64, name: &str, x: i32, z: i32, radius: i32) -> PyResult<String> {
+            let (set, only) = self.w.structures.resolve(name).ok_or_else(|| err(format!("unknown structure '{name}'")))?;
+            let loot = self.w.loot.as_ref().map_err(|e| err(e.clone()))?;
+            let world = self.w.clone();
+            Ok(py.detach(move || {
+                let mut ev = Eval::new(&world, seed, &[]);
+                let mut out = vec![];
+                for h in ev.instances(set, only, (x, z), radius) {
+                    for c in &h.chests {
+                        let items: Vec<Value> = loot.fill(&c.table, c.seed, None).unwrap_or_default().iter().flatten().map(|s| s.to_json()).collect();
+                        out.push(serde_json::json!({"structure": world.structures.structures[h.structure].name, "x": c.pos.0, "y": c.pos.1, "z": c.pos.2,
+                                                    "table": c.table, "seed": c.seed, "exact": c.exact, "items": items}));
+                    }
+                }
+                Value::Array(out).to_string()
+            }))
+        }
+
         /// Structure-seed cracking from observed starts [(structure or set, block x, block z)]:
         /// the 48-bit structure seeds placing all of them. Errors if more than `max_work` seeds
         /// would have to be brute-forced (add observations of huts, temples, outposts, shipwrecks).

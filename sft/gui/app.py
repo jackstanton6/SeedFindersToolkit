@@ -49,6 +49,11 @@ TEMPLATES = {  # category -> condition -> default node (without "op")
         "lake": {"fluid": "lava", "within": 200, "step": 16, "min": 10},
         "slime": {"radius": 128, "within": 300, "min": 14},
     },
+    "loot": {
+        "loot": {"name": "buried_treasure", "item": "diamond", "within": 500, "min": 2},
+        "portal_frame": {"within": 300, "min": 8},
+        "portal_obsidian": {"within": 300, "min": 10},
+    },
     "scores": {
         "maximize": {"expr": _COUNT},
         "minimize": {"expr": {"op": "nearest", "name": "stronghold", "within": 3000}},
@@ -63,6 +68,12 @@ TEMPLATES = {  # category -> condition -> default node (without "op")
 DEFAULTS = {op: node for group in TEMPLATES.values() for op, node in group.items()}
 PRESETS = {  # ready-made queries (overworld speedrun parts and common hunts)
     "speedrun: village + ruined portal at spawn": "village(within=160) and ruined_portal(within=160, tags=['placement:on_land_surface'])",
+    "speedrun: near-complete portal frame": "portal_frame(within=200) >= 8 and village(within=300)",
+    "speedrun: portal + chest obsidian completes the frame": "portal_frame(within=150) + loot('ruined_portal', 'obsidian', within=150) >= 10",
+    "speedrun: portal chest with flint and steel": "loot('ruined_portal', 'flint_and_steel', within=200) and village(within=300)",
+    "speedrun: buried treasure with diamonds": "loot('buried_treasure', 'diamond', within=300) >= 2",
+    "speedrun: shipwreck iron": "loot('shipwreck', 'iron_ingot', within=200, total=True) >= 8",
+    "enchanted golden apple in a desert temple": "loot('desert_pyramid', 'enchanted_golden_apple', within=2000)",
     "speedrun: shipwreck + buried treasure at spawn": "shipwreck(within=200, tags=['chest:']) and buried_treasure(within=200)",
     "speedrun: desert temple + village": "desert_pyramid(within=200) and village(within=300)",
     "speedrun: close stronghold": "nearest('stronghold', within=2000) < 1450 and village(within=300)",

@@ -255,6 +255,47 @@ fn structure_chests_match() {
     assert_eq!(bad, 0, "{bad}/{checked} chest seeds differ");
 }
 
+/// Ruined portal obsidian after BlockAgeProcessor (some turns crying): plain obsidian inside each
+/// portal box. Boxes holding more obsidian than the template (another structure overlaps) are skipped.
+#[test]
+#[ignore]
+fn portal_obsidian_matches() {
+    let w = world();
+    let (mut checked, mut bad, mut skipped) = (0, 0, 0);
+    for f in fixtures("loot-world") {
+        let seed = f["seed"].as_i64().unwrap();
+        let real: Vec<Vec<i64>> = f["obsidian"].as_array().unwrap().iter().map(|o| {
+            o.as_array().unwrap().iter().map(|v| v.as_i64().unwrap_or(v.as_bool().unwrap_or(false) as i64)).collect()
+        }).collect();
+        let mut ev = sft_engine::query::Eval::new(w, seed, &[]);
+        let (set, only) = w.structures.resolve("ruined_portal").unwrap();
+        for h in ev.instances(set, only, (0, 0), f["radius"].as_i64().unwrap() as i32) {
+            let b = h.bbox.unwrap();
+            let inside = |o: &&Vec<i64>| (b[0]..=b[3]).contains(&(o[0] as i32)) && (b[1]..=b[4]).contains(&(o[1] as i32)) && (b[2]..=b[5]).contains(&(o[2] as i32));
+            let want = real.iter().filter(inside).filter(|o| o[3] == 0).count();
+            let got = h.tags.iter().find_map(|t| t.strip_prefix("obsidian:")).and_then(|v| v.parse::<usize>().ok()).unwrap();
+            let template = h.tags.iter().find_map(|t| t.strip_prefix("template:")).unwrap();
+            let size = [("portal_1", 11), ("portal_2", 11), ("portal_3", 11), ("portal_4", 11), ("portal_5", 15), ("portal_6", 16), ("portal_7", 12),
+                        ("portal_8", 17), ("portal_9", 12), ("portal_10", 13), ("giant_portal_1", 31), ("giant_portal_2", 29), ("giant_portal_3", 25)];
+            let total = size.iter().find(|s| template.ends_with(&format!("/{}", s.0))).unwrap().1;
+            if real.iter().filter(inside).count() > total {
+                skipped += 1;
+                continue;
+            }
+            if got != want {
+                if bad < 10 {
+                    eprintln!("seed {seed} portal {:?} {:?}: engine obsidian {got} real {want}", h.pos, h.tags);
+                }
+                bad += 1;
+            }
+            checked += 1;
+        }
+    }
+    eprintln!("{checked} portals checked, {skipped} skipped (foreign obsidian in the box)");
+    assert!(checked > 0);
+    assert_eq!(bad, 0, "{bad}/{checked} portals differ");
+}
+
 #[test]
 #[ignore]
 fn slime_chunks_match() {

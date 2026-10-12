@@ -4,7 +4,7 @@
 
 use crate::biome::{contains, BiomeSet, Biomes};
 use crate::density::{f32_of, ns};
-use crate::rng::{shuffle, JavaRandom, Rng, WorldgenXoro};
+use crate::rng::{pos_seed, shuffle, JavaRandom, Rng, WorldgenXoro};
 use crate::world::{json_dir, BiomeCtx, Block, Heightmap, Seeded};
 use flate2::read::GzDecoder;
 use serde_json::Value;
@@ -141,6 +141,8 @@ struct Pool {
 struct Template {
     size: [i32; 3],
     containers: Vec<([i32; 3], String)>, // blocks with NBT that are loot containers (+ LootTable), (y, x, z) order
+    obsidian: Vec<[i32; 3]>,
+    frames: Vec<Vec<[i32; 3]>>, // ruined portals: the 4x5 frames (no corners) holding the most obsidian
     markers: Vec<([i32; 3], String)>, // data markers (structure blocks in DATA mode), sorted by (y, x, z)
     jigsaws: Vec<([i32; 3], String, i32)>, // (pos, name, selection priority), sorted by (y, x, z)
 }
@@ -380,9 +382,14 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
     let mut jigsaws = vec![];
     let mut markers = vec![];
     let mut containers = vec![];
+    let mut obsidian = vec![];
     for blk in root.get("blocks").map(|b| b.list()).unwrap_or(&[]) {
         let state = blk.get("state").map_or(0, Nbt::int) as usize;
         let name = palette.get(state).and_then(|p| p.get("id").or(p.get("Name"))).map_or("", Nbt::str);
+        if name == "minecraft:obsidian" {
+            let p = blk.get("pos").map(|p| p.list()).unwrap_or(&[]);
+            obsidian.push([p[0].int(), p[1].int(), p[2].int()]);
+        }
         if let (true, Some(nbt)) = (CONTAINERS.contains(&name) || name.ends_with("shulker_box"), blk.get("nbt")) {
             let p = blk.get("pos").map(|p| p.list()).unwrap_or(&[]);
             containers.push(([p[0].int(), p[1].int(), p[2].int()], nbt.get("LootTable").map_or("", Nbt::str).to_string()));
@@ -407,7 +414,8 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
     jigsaws.sort_by_key(|(p, ..)| (p[1], p[0], p[2])); // StructureTemplate.buildInfoList order
     markers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
     containers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
-    Ok(Template { size, jigsaws, markers, containers })
+    let frames = if location.contains("ruined_portal/portal_") { portal_frames(&obsidian, size) } else { vec![] };
+    Ok(Template { size, jigsaws, markers, containers, obsidian, frames })
 }
 
 impl Structures {
@@ -827,6 +835,17 @@ impl Structures {
                     let rot: i32 = rot.parse().unwrap_or(0);
                     let pivot = (t.size[0] / 2, t.size[2] / 2);
                     *chests = self.template_chests(world_seed, st, t, [x0, b[1], z0], mirror, rot, pivot, Some((center.0 >> 4, center.1 >> 4)), true, &|_| None);
+                    // BlockAgeProcessor: each obsidian turns crying with LegacyRandom(Mth.getSeed(pos)) < 0.15.
+                    // Crying obsidian is not counted: the netherrack spread after placement may overwrite it.
+                    let plain = |p: &[i32; 3]| {
+                        let q = transform(*p, mirror, rot, pivot);
+                        JavaRandom::new(pos_seed(q[0] + x0, q[1] + b[1], q[2] + z0)).next_float() >= 0.15
+                    };
+                    let n = t.obsidian.iter().filter(|p| plain(p)).count();
+                    tags.push(format!("obsidian:{n}"));
+                    if let Some(f) = t.frames.iter().map(|f| f.iter().filter(|p| t.obsidian.contains(p) && plain(p)).count()).max() {
+                        tags.push(format!("frame:{f}"));
+                    }
                 }
             }
             _ => {}
@@ -991,6 +1010,38 @@ const SHIPWRECK_OCEAN: [&str; 20] = [
     "sideways_fronthalf_degraded", "sideways_backhalf_degraded", "rightsideup_full_degraded", "rightsideup_fronthalf_degraded",
     "rightsideup_backhalf_degraded",
 ];
+
+/// Ruined portal frames: every 4 wide x 5 tall frame (corners not needed, 10 blocks), standing or
+/// lying, that holds the most template obsidian. Broken portals can tie; the caller takes the best.
+fn portal_frames(obsidian: &[[i32; 3]], size: [i32; 3]) -> Vec<Vec<[i32; 3]>> {
+    let mut best: (usize, Vec<Vec<[i32; 3]>>) = (0, vec![]);
+    for (wa, ha) in [(0, 1), (2, 1), (0, 2), (2, 0)] {
+        for bx in -1..=size[0] {
+            for by in -1..=size[1] {
+                for bz in -1..=size[2] {
+                    let frame: Vec<[i32; 3]> = (0..4)
+                        .flat_map(|i| (0..5).map(move |j| (i, j)))
+                        .filter(|&(i, j)| (i == 0 || i == 3 || j == 0 || j == 4) && !((i == 0 || i == 3) && (j == 0 || j == 4)))
+                        .map(|(i, j)| {
+                            let mut p = [bx, by, bz];
+                            p[wa] += i;
+                            p[ha] += j;
+                            p
+                        })
+                        .collect();
+                    let n = frame.iter().filter(|p| obsidian.contains(p)).count();
+                    if n > best.0 {
+                        best = (n, vec![]);
+                    }
+                    if n == best.0 && n > 0 {
+                        best.1.push(frame);
+                    }
+                }
+            }
+        }
+    }
+    best.1
+}
 
 /// ScatteredFeaturePiece box at y=64 (before terrain fitting); direction index NORTH, EAST, SOUTH, WEST.
 fn scattered_box(x: i32, z: i32, dir: i32, w: i32, h: i32, d: i32) -> [i32; 6] {

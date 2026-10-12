@@ -1,4 +1,4 @@
-"""Command line: `python -m sft [gui|data|search|check|scan|locate|crack|plugins]` (no command = GUI)."""
+"""Command line: `python -m sft [gui|data|search|check|scan|locate|loot|crack|plugins]` (no command = GUI)."""
 import argparse
 import json
 import os
@@ -82,6 +82,13 @@ def cmd_crack(a):
         run_job(job, a)
 
 
+def cmd_loot(a):
+    for c in json.loads(sft.world(a.version).chests(a.seed, a.structure, a.x, a.z, a.radius)):
+        items = ", ".join(f"{s['count']} {s['item'].split(':')[-1]}" + (f" {s['enchantments']}" if "enchantments" in s else "") for s in c["items"])
+        print(f"{c['structure'].split(':')[-1]:20} {c['x']:7} {c['y']:4} {c['z']:7}  {c['table'].split('/')[-1]:20} {items}"
+              + ("" if c["exact"] else "  (seed approximate)"))
+
+
 def cmd_locate(a):
     for name, x, y, z, exact in sft.world(a.version).structures_near(a.seed, a.x, a.z, a.radius, [a.structure]):
         print(f"{name:40} {x:8} {y:5} {z:8}{'' if exact else '  (approximate y/validity)'}")
@@ -144,6 +151,12 @@ def main():
     lo.add_argument("--x", type=int, default=0)
     lo.add_argument("--z", type=int, default=0)
     lo.add_argument("--radius", type=int, default=2000)
+    lt = sub.add_parser("loot", help="list chests and their contents near a point")
+    lt.add_argument("seed", type=int)
+    lt.add_argument("structure", help="buried_treasure, shipwreck, ruined_portal, igloo, desert_pyramid")
+    lt.add_argument("--x", type=int, default=0)
+    lt.add_argument("--z", type=int, default=0)
+    lt.add_argument("--radius", type=int, default=1000)
     sub.add_parser("plugins", help="list plugins and what they register")
     a = p.parse_args()
 
@@ -153,7 +166,7 @@ def main():
     elif a.cmd == "data":
         print("data ready in", sft.data.setup(a.mc_version, a.jar))
     else:
-        {"search": cmd_search, "check": cmd_check, "scan": cmd_scan, "locate": cmd_locate, "crack": cmd_crack, "plugins": cmd_plugins}[a.cmd](a)
+        {"search": cmd_search, "check": cmd_check, "scan": cmd_scan, "locate": cmd_locate, "loot": cmd_loot, "crack": cmd_crack, "plugins": cmd_plugins}[a.cmd](a)
 
 
 if __name__ == "__main__":

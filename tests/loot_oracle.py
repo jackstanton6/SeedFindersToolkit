@@ -85,6 +85,23 @@ def chunks(world: Path):
             yield read_nbt(raw)
 
 
+def blocks(chunk: dict, wanted: set[str]):
+    """(x, y, z, name) of blocks in `wanted` from a chunk's packed section palettes."""
+    for sec in chunk.get("sections", []):
+        bs = sec.get("block_states", {})
+        # 26.x: plain ids, or {"": id} when the list mixes plain ids and states with properties
+        pal = [p if isinstance(p, str) else p.get("", p.get("Name", p.get("id"))) for p in bs.get("palette", [])]
+        if not wanted.intersection(pal):
+            continue
+        bits = max(4, (len(pal) - 1).bit_length())
+        per, mask = 64 // bits, (1 << bits) - 1
+        data = [d % 2**64 for d in bs.get("data", [])]
+        for i in range(4096):
+            name = pal[(data[i // per] >> (i % per * bits)) & mask] if data else pal[0]
+            if name in wanted:
+                yield chunk["xPos"] * 16 + (i & 15), sec["Y"] * 16 + (i >> 8), chunk["zPos"] * 16 + (i >> 4 & 15), name
+
+
 def canonical(item: dict) -> dict:
     """Region item NBT -> the engine's Stack JSON (item, count, enchantments, extra)."""
     c = item.get("components", {})
@@ -227,16 +244,17 @@ def world(seed: int, radius=1200):
             print(f"  {len(chunk_set) - len(missing)}/{len(chunk_set)} chunks generated")
             if not missing:
                 break
-        chests = []
+        chests, obsidian = [], []
         for ch in chunks(srv.level):
             for be in ch.get("block_entities", []):
                 if "LootTable" in be:
                     chests.append([be["x"], be["y"], be["z"], be["id"], be["LootTable"], be.get("LootTableSeed", 0)])
+            obsidian += [[x, y, z, n == "minecraft:crying_obsidian"] for x, y, z, n in blocks(ch, {"minecraft:obsidian", "minecraft:crying_obsidian"})]
     finally:
         srv.stop()
     starts = [[n, x, y, z] for n, x, y, z, _ in found]
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / f"loot-world-{seed}.json").write_text(json.dumps({"seed": seed, "radius": radius, "starts": starts, "chests": sorted(chests)}))
+    (OUT / f"loot-world-{seed}.json").write_text(json.dumps({"seed": seed, "radius": radius, "starts": starts, "chests": sorted(chests), "obsidian": sorted(obsidian)}))
     print(f"seed {seed}: {len(found)} structures, {len(chests)} loot containers")
 
 

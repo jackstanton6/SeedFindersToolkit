@@ -53,6 +53,10 @@ pub enum Metric {
     Height { at: (i32, i32), ocean_floor: bool },
     Terrain { kind: Terrain, at: (i32, i32), within: i32, step: i32 },
     Slime { radius: i32, at: (i32, i32), within: i32 },
+    /// `item` in the chests of one structure (the best one), or of all of them with `total`.
+    Loot { s: Sel, item: String, enchant: Option<String>, at: (i32, i32), within: i32, total: bool },
+    /// Best ruined portal: plain obsidian in its most complete frame (`frame`), or in the whole portal.
+    Portal { at: (i32, i32), within: i32, frame: bool },
     Native { lib: usize, name: CString, params: CString },
 }
 
@@ -215,6 +219,16 @@ impl Parser<'_> {
                 (Metric::Terrain { kind, at, within, step: int(v, "step", 32).max(1) }, min, inf)
             }
             "slime" => (Metric::Slime { radius: int(v, "radius", 128), at, within }, 1.0, inf),
+            "loot" => {
+                let item = crate::density::ns(v["item"].as_str().ok_or("loot needs an item")?);
+                let enchant = v.get("enchant").and_then(Value::as_str).map(crate::density::ns);
+                let m = Metric::Loot { s: self.sel(&v["name"], v)?, item, enchant, at, within: int(v, "within", 1000), total: v["total"].as_bool().unwrap_or(false) };
+                (m, 1.0, inf)
+            }
+            "portal_frame" | "portal_obsidian" => {
+                let frame = op == "portal_frame";
+                (Metric::Portal { at, within: int(v, "within", 1000), frame }, if frame { 10.0 } else { 1.0 }, inf)
+            }
             "native" => {
                 let plugin = v["plugin"].as_str().ok_or("native needs 'plugin'")?;
                 (
@@ -309,7 +323,9 @@ impl Metric {
             | Metric::Island { at, .. }
             | Metric::Height { at, .. }
             | Metric::Terrain { at, .. }
-            | Metric::Slime { at, .. } => mv(at, d),
+            | Metric::Slime { at, .. }
+            | Metric::Loot { at, .. }
+            | Metric::Portal { at, .. } => mv(at, d),
             Metric::Climate { pos, .. } => {
                 pos.0 += d.0;
                 pos.2 += d.1;
@@ -642,6 +658,8 @@ impl<'w> Eval<'w> {
                     groups.len() as f64 >= *min && max_cover(&groups, dist + 128, *at, within + 128).0 as f64 >= *min
                 }
                 Metric::Slime { radius, at, within } => self.slime_max(*radius, *at, *within) as f64 >= *min,
+                Metric::Loot { s, at, within, .. } if self.spread(s) => !pot(s, *at, *within).is_empty(),
+                Metric::Portal { at, within, .. } => self.w.structures.resolve("ruined_portal").is_none_or(|(set, _)| !potential(self.w, set, self.seed, *at, *within).is_empty()),
                 Metric::Bingo { sels, at, within } => sels.iter().filter(|s| !self.spread(s) || !pot(s, *at, *within).is_empty()).count() as f64 >= *min,
                 _ => true,
             },
@@ -858,6 +876,59 @@ impl<'w> Eval<'w> {
             }
             Metric::Terrain { kind, at, within, step } => self.terrain(*kind, *at, *within, *step),
             Metric::Slime { radius, at, within } => self.slime_max(*radius, *at, *within) as f64,
+            Metric::Loot { s, item, enchant, at, within, total } => {
+                let Ok(loot) = &self.w.loot else { return 0.0 };
+                let (mut best, mut sum) = (0, 0);
+                let mut keep: Vec<(Hit, Vec<Value>)> = vec![]; // what the details show: best structure, or all with `total`
+                for h in self.select(s, *at, *within) {
+                    let mut n = 0;
+                    let mut found = vec![];
+                    for c in &h.chests {
+                        let items: Vec<_> = loot.fill(&c.table, c.seed, None).unwrap_or_default().into_iter().flatten().collect();
+                        let k: i32 = items.iter().filter(|st| st.item == *item && enchant.as_ref().is_none_or(|e| st.enchants.iter().any(|(n, _)| n == e))).map(|st| st.count).sum();
+                        if k > 0 {
+                            found.push(json!({"type": "chest", "x": c.pos.0, "y": c.pos.1, "z": c.pos.2, "table": c.table, "seed": c.seed,
+                                              "exact": c.exact, "items": items.iter().map(|s| s.to_json()).collect::<Vec<_>>()}));
+                        }
+                        n += k;
+                    }
+                    if n > 0 && (*total || n > best) {
+                        if !*total {
+                            keep.clear();
+                        }
+                        keep.push((h, found));
+                    }
+                    best = best.max(n);
+                    sum += n;
+                }
+                if note {
+                    for (h, found) in keep {
+                        self.note(&h);
+                        self.details.extend(found);
+                    }
+                }
+                (if *total { sum } else { best }) as f64
+            }
+            Metric::Portal { at, within, frame } => {
+                let Some((set, only)) = self.w.structures.resolve("ruined_portal") else { return 0.0 };
+                let key = if *frame { "frame:" } else { "obsidian:" };
+                let mut best: Option<Hit> = None;
+                let value = |h: &Hit| h.tags.iter().find_map(|t| t.strip_prefix(key)).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+                for h in self.instances(set, only, *at, *within) {
+                    if best.as_ref().is_none_or(|b| value(&h) > value(b)) {
+                        best = Some(h);
+                    }
+                }
+                match best {
+                    Some(h) => {
+                        if note {
+                            self.note(&h);
+                        }
+                        value(&h) as f64
+                    }
+                    None => 0.0,
+                }
+            }
             Metric::Native { lib, name, params } => {
                 let natives = self.natives;
                 natives[*lib].call(self, name, params) as f64
