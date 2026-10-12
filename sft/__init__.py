@@ -43,7 +43,7 @@ def world(version: str = "26.3"):
 class Job:
     """One search: the engine part runs in Rust threads; py(...) terms filter its matches here."""
 
-    def __init__(self, version: str, query_text, mode="range", start=0, count=1_000_000, seeds=None, max_results=0, loaded=None):
+    def __init__(self, version: str, query_text, mode="range", start=0, count=1_000_000, seeds=None, max_results=0, loaded=None, gpu=False):
         tree = query.parse(query_text) if isinstance(query_text, str) else query_text
         engine_tree, self.py_terms = query.split_python(tree)
         self.world = world(version)
@@ -54,8 +54,9 @@ class Job:
         used = {n.get("plugin") for n in query.nodes(engine_tree) if n["op"] == "native"}
         self.search = engine().Search(
             self.world, json.dumps(engine_tree or {"op": "and", "args": []}), mode, start, count,
-            seeds, [n for n in plugins.natives(plugin_list) if n[0] in used], max_results,
+            seeds, [n for n in plugins.natives(plugin_list) if n[0] in used], max_results, gpu,
         )
+        self.gpu_note = self.search.gpu_note
         self.rows: list[tuple[int, list]] = []
         self.py_rejected = 0
         # maximize()/minimize(): rows are the best `keep` seeds by score, best first
@@ -122,11 +123,16 @@ def observation_query(observations) -> str:
     return " and ".join(f"structure({n!r}, at=({x}, {z}), within=24)" for n, x, z in observations)
 
 
-def crack(version: str, observations, extra_query: str = "", max_work=2**38) -> tuple[list[int], "Job | None"]:
+def cuda_status() -> tuple[bool, str]:
+    """(usable, device name or why not) for the CUDA pre-filter."""
+    return engine().cuda_status() if _engine is not None else (False, "engine not built")
+
+
+def crack(version: str, observations, extra_query: str = "", max_work=None, gpu=False) -> tuple[list[int], "Job | None"]:
     """Observed structure starts [(structure, x, z)] -> 48-bit structure seeds, plus a list Job over
     their sisters checking every observation with biomes (and `extra_query`, e.g. biome or height
-    observations). Run the Job for the full 64-bit seeds."""
-    found = world(version).crack([(n, x, z) for n, x, z in observations], max_work)
+    observations). Run the Job for the full 64-bit seeds. `gpu` brute-forces on the CUDA device."""
+    found = world(version).crack([(n, x, z) for n, x, z in observations], max_work, gpu)
     q = " and ".join(t for t in (observation_query(observations), extra_query) if t)
     return found, (Job(version, q, "list", seeds=sisters(found)) if found else None)
 

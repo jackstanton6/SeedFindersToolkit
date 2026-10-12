@@ -4,6 +4,7 @@
 //! full check (`Eval::eval`). A seed is fully evaluated only if `pre` passes, and in structure-seed
 //! mode the 65536 upper-bit siblings are only tried for structure seeds that pass.
 
+use crate::gpu;
 use crate::query::{parse, Cond, Eval};
 use crate::world::{Heightmap, World};
 use serde_json::{json, Value};
@@ -139,6 +140,9 @@ pub struct Stats {
     pub matched: AtomicU64,
     /// Sister seeds already checked in structure seeds that are still being expanded.
     pub partial: AtomicU64,
+    /// Units the GPU pre-filter checked and passed.
+    pub gpu_units: AtomicU64,
+    pub gpu_passed: AtomicU64,
 }
 
 #[derive(Default)]
@@ -163,6 +167,8 @@ pub struct Search {
     top: Mutex<Vec<f64>>,
     /// First engine panic (unit and message); the search stops when one happens.
     pub error: Mutex<Option<String>>,
+    /// GPU pre-filter: device and program (see `use_gpu`).
+    gpu: Option<(Arc<gpu::Gpu>, Vec<i32>)>,
 }
 
 impl Search {
@@ -177,7 +183,7 @@ impl Search {
     fn with(world: Arc<World>, cond: Cond, mode: Mode, natives: Vec<Native>) -> Search {
         let ranked = cond.has_objective();
         let max_results = if ranked { 100 } else { u64::MAX };
-        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]), error: Mutex::new(None) }
+        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]), error: Mutex::new(None), gpu: None }
     }
 
     fn full(&self, seed: i64, local: &mut Local) {
@@ -246,12 +252,60 @@ impl Search {
         *l = Local::default();
     }
 
-    /// Runs units [from, to) on `threads` workers pulling blocks in order. Returns the resume
-    /// point: every unit before it is done.
+    /// Runs units [from, to) on `threads` workers (after the GPU pre-filter when enabled). Returns
+    /// the resume point: every unit before it is done.
     pub fn run(&self, from: u64, to: u64, threads: usize) -> u64 {
+        match &self.gpu {
+            Some((g, prog)) => self.run_gpu(g, prog, from, to, threads),
+            None => from + self.run_cpu(to - from, &|p| from + p, &|_| 0, threads),
+        }
+    }
+
+    /// Batches of units go through the GPU program; the CPU then checks the survivors as usual.
+    fn run_gpu(&self, g: &gpu::Gpu, prog: &[i32], from: u64, to: u64, threads: usize) -> u64 {
+        let (mode, base, rng) = match self.mode {
+            Mode::Range { start, .. } => (0, start as u64, 0),
+            Mode::StructureSeeds { start, .. } => (1, start, 0),
+            Mode::Random { rng_seed, .. } => (2, 0, rng_seed),
+            Mode::List(_) => unreachable!("use_gpu rejects lists"),
+        };
+        // ponytail: GPU and CPU take turns per batch; overlap them if the GPU side ever dominates
+        let (mut lo, mut batch) = (from, 1u64 << 16);
+        while lo < to && !self.stop.load(Relaxed) {
+            let hi = (lo + batch).min(to);
+            let t = Instant::now();
+            let surv = match g.filter(prog, mode, base.wrapping_add(lo), hi - lo, rng) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.error.lock().unwrap().get_or_insert(format!("GPU error: {e}"));
+                    self.stop.store(true, Relaxed);
+                    return lo;
+                }
+            };
+            batch = gpu::next_batch(batch, t, 1 << 24);
+            self.stats.gpu_units.fetch_add(hi - lo, Relaxed);
+            self.stats.gpu_passed.fetch_add(surv.len() as u64, Relaxed);
+            // the GPU-rejected units before a survivor count as done when the CPU finishes it
+            let gap = |p: u64| surv[p as usize] as u64 - if p == 0 { 0 } else { surv[p as usize - 1] as u64 + 1 };
+            let p = self.run_cpu(surv.len() as u64, &|p| lo + surv[p as usize] as u64, &gap, threads);
+            if p < surv.len() as u64 {
+                return lo + surv[p as usize] as u64;
+            }
+            let tail = hi - lo - surv.last().map_or(0, |&l| l as u64 + 1);
+            self.stats.units_done.fetch_add(tail, Relaxed);
+            self.stats.checks.fetch_add(tail, Relaxed);
+            lo = hi;
+        }
+        lo.min(to)
+    }
+
+    /// Runs positions [0, n), position p being unit `unit_at(p)`, on workers pulling blocks in order;
+    /// a finished position also credits `skipped(p)` units the GPU already rejected. Returns the first
+    /// position not done (n when all are).
+    fn run_cpu(&self, n: u64, unit_at: &(dyn Fn(u64) -> u64 + Sync), skipped: &(dyn Fn(u64) -> u64 + Sync), threads: usize) -> u64 {
         // small blocks when there is little work, so slow queries still use every thread
-        let block = if matches!(self.mode, Mode::StructureSeeds { .. }) { 1 } else { ((to - from) / (threads.max(1) as u64 * 16)).clamp(1, 256) };
-        let next = AtomicU64::new(from);
+        let block = if matches!(self.mode, Mode::StructureSeeds { .. }) { 1 } else { (n / (threads.max(1) as u64 * 16)).clamp(1, 256) };
+        let next = AtomicU64::new(0);
         let resume = AtomicU64::new(u64::MAX);
         std::thread::scope(|sc| {
             for _ in 0..threads.max(1) {
@@ -259,10 +313,11 @@ impl Search {
                     let mut local = Local::default();
                     loop {
                         let lo = next.fetch_add(block, Relaxed);
-                        if lo >= to {
+                        if lo >= n {
                             break;
                         }
-                        for i in lo..(lo + block).min(to) {
+                        for p in lo..(lo + block).min(n) {
+                            let i = unit_at(p);
                             let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.unit(i, &mut local))).unwrap_or_else(|e| {
                                 let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
                                 self.error.lock().unwrap().get_or_insert(format!("engine error at unit {i}: {msg}"));
@@ -270,11 +325,12 @@ impl Search {
                                 false
                             });
                             if self.stop.load(Relaxed) || !ok {
-                                resume.fetch_min(i, Relaxed);
+                                resume.fetch_min(p, Relaxed);
                                 self.flush(&mut local);
                                 return;
                             }
-                            local.units += 1;
+                            local.units += 1 + skipped(p);
+                            local.checks += skipped(p);
                             if local.full > 0 || local.units >= 1024 {
                                 self.flush(&mut local); // live progress for slow queries
                             }
@@ -284,7 +340,22 @@ impl Search {
                 });
             }
         });
-        resume.load(Relaxed).min(next.load(Relaxed)).min(to)
+        resume.load(Relaxed).min(next.load(Relaxed)).min(n)
+    }
+
+    /// Turns on the GPU pre-filter; Err says why it cannot be used for this search.
+    pub fn use_gpu(&mut self) -> Result<String, String> {
+        if matches!(self.mode, Mode::List(_)) {
+            return Err("seed lists run on the CPU".into());
+        }
+        let prog = gpu::program(&self.world, &self.cond);
+        if prog.is_empty() {
+            return Err("nothing in this query depends on the seed alone (structure placement, slime chunks)".into());
+        }
+        let g = gpu::get()?;
+        let name = g.name.clone();
+        self.gpu = Some((g, prog));
+        Ok(name)
     }
 
     /// Units done, counting partly expanded structure seeds as fractions.
@@ -302,40 +373,53 @@ impl Search {
     pub fn estimate(&self, secs: f64, threads: usize) -> Value {
         let t = Instant::now();
         let finished = AtomicBool::new(false);
-        let snap = Mutex::new((0.0, 0, 0, 0, 0.0));
+        let snap = Mutex::new([0.0; 8]);
         std::thread::scope(|sc| {
             sc.spawn(|| {
                 while !finished.load(Relaxed) && !self.stop.load(Relaxed) && t.elapsed().as_secs_f64() < secs {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 let st = &self.stats;
-                *snap.lock().unwrap() = (self.units_done(), st.matched.load(Relaxed), st.checks.load(Relaxed), st.prefilter_passed.load(Relaxed), t.elapsed().as_secs_f64());
+                let c = |a: &AtomicU64| a.load(Relaxed) as f64;
+                *snap.lock().unwrap() = [self.units_done(), c(&st.matched), c(&st.checks), c(&st.prefilter_passed), c(&st.full_evals), c(&st.gpu_units), c(&st.gpu_passed), t.elapsed().as_secs_f64()];
                 self.stop.store(true, Relaxed);
             });
             self.run(0, self.mode.units(), threads);
             finished.store(true, Relaxed);
         });
-        let (units, matched, checks, passed, secs) = *snap.lock().unwrap();
+        let [units, matched, checks, passed, full, gpu_units, gpu_passed, secs] = *snap.lock().unwrap();
         self.reset();
         if units <= 0.0 {
             return json!({"note": format!("no seed finished in {secs:.1}s: each one takes longer than that per thread")});
+        }
+        let structure = matches!(self.mode, Mode::StructureSeeds { .. });
+        // pass rate of the 48-bit pre-check (sister evaluations are not pre-checks)
+        let p = if gpu_units > 0.0 { gpu_passed / gpu_units } else { passed / (checks - if structure { full } else { 0.0 }).max(1.0) };
+        let mut rate = units / secs;
+        if structure && p > 0.0 && full > 0.0 {
+            // a short window sees the cheap rejected units but few whole 65536-sister expansions;
+            // in the long run each unit costs p * 65536 sister evaluations. With the GPU pre-filter
+            // the threads only expand sisters (and rejected units are credited late), so the model
+            // alone is the estimate.
+            let model = full / secs / (p * 65536.0);
+            rate = if gpu_units > 0.0 { model } else { rate.min(model) };
         }
         let seeds = units * self.seeds_per_unit();
         json!({
             "sample": seeds,
             "seconds": secs,
-            "units_per_sec": units / secs,
-            "seeds_per_sec": seeds / secs,
-            "prefilter_rate": passed as f64 / checks.max(1) as f64,
+            "units_per_sec": rate,
+            "seeds_per_sec": rate * self.seeds_per_unit(),
+            "prefilter_rate": p,
             "matches": matched,
-            "match_rate": matched as f64 / seeds,
-            "seconds_total": self.mode.units() as f64 * secs / units,
+            "match_rate": matched / seeds,
+            "seconds_total": self.mode.units() as f64 / rate,
         })
     }
 
     fn reset(&self) {
         let st = &self.stats;
-        for a in [&st.units_done, &st.checks, &st.prefilter_passed, &st.full_evals, &st.matched, &st.partial] {
+        for a in [&st.units_done, &st.checks, &st.prefilter_passed, &st.full_evals, &st.matched, &st.partial, &st.gpu_units, &st.gpu_passed] {
             a.store(0, Relaxed);
         }
         self.results.lock().unwrap().clear();

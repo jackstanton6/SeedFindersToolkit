@@ -98,6 +98,21 @@ pub fn run(st: &Structures, p: &Plan, stop: &AtomicBool, done: &AtomicU64) -> Ve
     out
 }
 
+/// `run` with the high-bit brute force on the GPU (gpu.cu `crack`); same result.
+pub fn run_gpu(st: &Structures, p: &Plan, g: &crate::gpu::Gpu, stop: &AtomicBool, done: &AtomicU64) -> Result<Vec<i64>, String> {
+    let cells: Vec<[i32; 8]> = p.cells.iter().map(|c| {
+        let s = st.gpu_spread(c.set).expect("plan only keeps random-spread sets");
+        [s[0], s[1], s[2], s[3], c.grid.0, c.grid.1, c.chunk.0, c.chunk.1]
+    }).collect();
+    let mut out: Vec<i64> = g
+        .crack(&crate::gpu::crack_program(&cells), &p.lows, p.bits, stop, done)?
+        .into_iter()
+        .filter(|&seed| p.cells.iter().all(|c| st.is_structure_chunk(c.set, seed, c.chunk.0, c.chunk.1)))
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

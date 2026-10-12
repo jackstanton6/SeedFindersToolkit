@@ -584,6 +584,22 @@ impl Structures {
     }
 
     /// StructurePlacement.isStructureChunk for random-spread sets (rings: see `stronghold_chunks`).
+    /// Random-spread parameters for the GPU kernel (gpu.cu): spacing, separation, triangular, salt,
+    /// frequency reduction (0 default, 1-3 legacy types, 4 none), frequency bits, locate offset x, z.
+    /// Exclusion zones are left to the CPU.
+    pub fn gpu_spread(&self, set: usize) -> Option<[i32; 8]> {
+        let s = &self.sets[set];
+        let Placement::Spread { spacing, separation, triangular } = s.placement else { return None };
+        let reduction = match s.reduction {
+            _ if s.frequency >= 1.0 => 4,
+            Reduction::Default => 0,
+            Reduction::Legacy1 => 1,
+            Reduction::Legacy2 => 2,
+            Reduction::Legacy3 => 3,
+        };
+        Some([spacing, separation, triangular as i32, s.salt, reduction, s.frequency.to_bits() as i32, s.locate_offset.0, s.locate_offset.2])
+    }
+
     pub fn is_structure_chunk(&self, set: usize, seed: i64, cx: i32, cz: i32) -> bool {
         let s = &self.sets[set];
         let Placement::Spread { spacing, .. } = s.placement else { return false };

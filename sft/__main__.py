@@ -20,11 +20,13 @@ def cmd_search(a):
     seeds = [int(x) for x in open(a.seeds_file).read().split()] if a.seeds_file else None
     if a.sisters is not None:
         seeds = sft.sisters([a.sisters])
-    job = sft.Job(a.version, a.query, "list" if seeds else a.mode, a.start, a.count, seeds, a.max)
+    job = sft.Job(a.version, a.query, "list" if seeds else a.mode, a.start, a.count, seeds, a.max, gpu=a.gpu)
     run_job(job, a)
 
 
 def run_job(job, a):
+    if job.gpu_note:
+        print(job.gpu_note, file=sys.stderr)
     est = job.estimate(a.sample, a.threads) if a.sample > 0 else {}
     if "note" in est:
         print("estimate:", est["note"], file=sys.stderr)
@@ -79,7 +81,7 @@ def cmd_crack(a):
         name, _, xz = o.partition(":")
         x, z = (int(v) for v in xz.split(","))
         obs.append((name, x, z))
-    found, job = sft.crack(a.version, obs, a.query)
+    found, job = sft.crack(a.version, obs, a.query, gpu=a.gpu)
     print(f"{len(found)} structure seed(s):", *found, file=sys.stderr)
     if job:
         print(f"checking {len(found) * 65536:,} sister seeds", file=sys.stderr)
@@ -132,6 +134,7 @@ def main():
         s.add_argument("--start-unit", type=int, default=0, help="resume point printed by a stopped run")
         s.add_argument("--details", action="store_true", help="print match details")
         s.add_argument("--out", help="write results (.csv/.json/.txt)")
+        s.add_argument("--gpu", action="store_true", help="pre-filter (and crack) on the CUDA GPU")
     run_args(s)
     c = sub.add_parser("check", help="evaluate a query on one seed")
     c.add_argument("seed", type=int)

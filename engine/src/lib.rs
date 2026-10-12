@@ -6,6 +6,7 @@
 pub mod biome;
 pub mod crack;
 pub mod density;
+pub mod gpu;
 pub mod loot;
 pub mod noise;
 pub mod rng;
@@ -220,9 +221,10 @@ mod py {
 
         /// Structure-seed cracking from observed starts [(structure or set, block x, block z)]:
         /// the 48-bit structure seeds placing all of them. Errors if more than `max_work` seeds
-        /// would have to be brute-forced (add observations of huts, temples, outposts, shipwrecks).
-        #[pyo3(signature = (observations, max_work=1u64 << 38))]
-        fn crack(&self, py: Python<'_>, observations: Vec<(String, i32, i32)>, max_work: u64) -> PyResult<Vec<i64>> {
+        /// would have to be brute-forced (default 2^38 on the CPU, 2^44 with `gpu`; add observations
+        /// of huts, temples, outposts, shipwrecks).
+        #[pyo3(signature = (observations, max_work=None, gpu=false))]
+        fn crack(&self, py: Python<'_>, observations: Vec<(String, i32, i32)>, max_work: Option<u64>, gpu: bool) -> PyResult<Vec<i64>> {
             let st = &self.w.structures;
             let obs = observations
                 .iter()
@@ -231,10 +233,16 @@ mod py {
             let world = self.w.clone();
             py.detach(move || {
                 let p = crate::crack::plan(&world.structures, &obs).map_err(err)?;
+                let max_work = max_work.unwrap_or(if gpu { 1 << 44 } else { 1 << 38 });
                 if p.work > max_work {
                     return Err(err(format!("{} seeds to brute-force (limit {max_work}); add more observations", p.work)));
                 }
-                Ok(crate::crack::run(&world.structures, &p, &std::sync::atomic::AtomicBool::new(false), &std::sync::atomic::AtomicU64::new(0)))
+                let (stop, done) = (std::sync::atomic::AtomicBool::new(false), std::sync::atomic::AtomicU64::new(0));
+                if gpu {
+                    let g = crate::gpu::get().map_err(err)?;
+                    return crate::crack::run_gpu(&world.structures, &p, &g, &stop, &done).map_err(err);
+                }
+                Ok(crate::crack::run(&world.structures, &p, &stop, &done))
             })
         }
     }
@@ -252,16 +260,18 @@ mod py {
         job: Mutex<Option<JoinHandle<u64>>>,
         started: Mutex<Option<Instant>>,
         resume: Mutex<u64>,
+        gpu_note: String,
     }
 
     #[pymethods]
     impl PySearch {
         /// mode: "range" (start, count), "structure_seeds" (start, count), "list" (seeds),
         /// "random" (count, start = generator seed). natives: [(plugin name, library path)].
+        /// gpu: pre-filter on the CUDA device when the query allows it (see `gpu_note`).
         #[new]
-        #[pyo3(signature = (world, query, mode, start=0, count=0, seeds=None, natives=vec![], max_results=0))]
+        #[pyo3(signature = (world, query, mode, start=0, count=0, seeds=None, natives=vec![], max_results=0, gpu=false))]
         #[allow(clippy::too_many_arguments)]
-        fn new(world: &PyWorld, query: &str, mode: &str, start: i64, count: u64, seeds: Option<Vec<i64>>, natives: Vec<(String, String)>, max_results: u64) -> PyResult<Self> {
+        fn new(world: &PyWorld, query: &str, mode: &str, start: i64, count: u64, seeds: Option<Vec<i64>>, natives: Vec<(String, String)>, max_results: u64, gpu: bool) -> PyResult<Self> {
             let q: Value = serde_json::from_str(query).map_err(|e| err(e.to_string()))?;
             let mode = match mode {
                 "range" => Mode::Range { start, count },
@@ -274,7 +284,15 @@ mod py {
             if max_results > 0 {
                 s.max_results = max_results;
             }
-            Ok(PySearch { inner: Arc::new(s), job: Mutex::new(None), started: Mutex::new(None), resume: Mutex::new(0) })
+            let gpu_note = if !gpu {
+                String::new()
+            } else {
+                match s.use_gpu() {
+                    Ok(name) => format!("GPU pre-filter on {name}"),
+                    Err(e) => format!("GPU not used: {e}"),
+                }
+            };
+            Ok(PySearch { inner: Arc::new(s), job: Mutex::new(None), started: Mutex::new(None), resume: Mutex::new(0), gpu_note })
         }
 
         /// Total work units (seeds, or structure seeds in structure_seeds mode).
@@ -341,6 +359,12 @@ mod py {
             ])
         }
 
+        /// Whether the GPU pre-filter is on, and on which device or why not ("" when not asked).
+        #[getter]
+        fn gpu_note(&self) -> String {
+            self.gpu_note.clone()
+        }
+
         /// The engine error that stopped the search, if any.
         #[getter]
         fn error(&self) -> Option<String> {
@@ -362,12 +386,22 @@ mod py {
         }
     }
 
+    /// (usable, device name or the reason it cannot be used). Initialises the device on first call.
+    #[pyfunction]
+    fn cuda_status(py: Python<'_>) -> (bool, String) {
+        match py.detach(crate::gpu::status) {
+            Ok(name) => (true, name),
+            Err(e) => (false, e),
+        }
+    }
+
     #[pymodule]
     #[pyo3(name = "_engine")]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyWorld>()?;
         m.add_class::<PySearch>()?;
         m.add("PLUGIN_ABI", search::ABI_VERSION)?;
+        m.add_function(wrap_pyfunction!(cuda_status, m)?)?;
         m.add("CLIMATE_PARAMS", query::CLIMATE_PARAMS.to_vec())?;
         Ok(())
     }
