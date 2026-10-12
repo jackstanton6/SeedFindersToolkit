@@ -137,6 +137,8 @@ pub struct Stats {
     pub prefilter_passed: AtomicU64,
     pub full_evals: AtomicU64,
     pub matched: AtomicU64,
+    /// Sister seeds already checked in structure seeds that are still being expanded.
+    pub partial: AtomicU64,
 }
 
 #[derive(Default)]
@@ -159,6 +161,8 @@ pub struct Search {
     pub max_results: u64,
     ranked: bool,
     top: Mutex<Vec<f64>>,
+    /// First engine panic (unit and message); the search stops when one happens.
+    pub error: Mutex<Option<String>>,
 }
 
 impl Search {
@@ -173,7 +177,7 @@ impl Search {
     fn with(world: Arc<World>, cond: Cond, mode: Mode, natives: Vec<Native>) -> Search {
         let ranked = cond.has_objective();
         let max_results = if ranked { 100 } else { u64::MAX };
-        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]) }
+        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]), error: Mutex::new(None) }
     }
 
     fn full(&self, seed: i64, local: &mut Local) {
@@ -216,13 +220,18 @@ impl Search {
                 local.checks += 1;
                 if Eval::new(&self.world, low, &self.natives).pre(&self.cond) {
                     local.passed += 1;
+                    // flushed per sister so slow queries still show progress
                     for upper in 0..65536i64 {
                         if self.stop.load(Relaxed) {
+                            self.stats.partial.fetch_sub(upper as u64, Relaxed);
                             return false;
                         }
                         local.checks += 1;
                         self.full((upper << 48) | low, local);
+                        self.flush(local);
+                        self.stats.partial.fetch_add(1, Relaxed);
                     }
+                    self.stats.partial.fetch_sub(65536, Relaxed);
                 }
             }
         }
@@ -254,12 +263,21 @@ impl Search {
                             break;
                         }
                         for i in lo..(lo + block).min(to) {
-                            if self.stop.load(Relaxed) || !self.unit(i, &mut local) {
+                            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.unit(i, &mut local))).unwrap_or_else(|e| {
+                                let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+                                self.error.lock().unwrap().get_or_insert(format!("engine error at unit {i}: {msg}"));
+                                self.stop.store(true, Relaxed);
+                                false
+                            });
+                            if self.stop.load(Relaxed) || !ok {
                                 resume.fetch_min(i, Relaxed);
                                 self.flush(&mut local);
                                 return;
                             }
                             local.units += 1;
+                            if local.full > 0 || local.units >= 1024 {
+                                self.flush(&mut local); // live progress for slow queries
+                            }
                         }
                         self.flush(&mut local);
                     }
@@ -269,25 +287,60 @@ impl Search {
         resume.load(Relaxed).min(next.load(Relaxed)).min(to)
     }
 
-    /// Times a sample of units to estimate throughput, pre-filter pass rate and total time.
-    pub fn estimate(&self, sample: u64, threads: usize) -> Value {
-        if !self.natives.is_empty() {
-            return json!({"note": "native filters are not sampled; no estimate"});
-        }
-        let n = sample.min(self.mode.units()).max(1);
-        let probe = Search::with(self.world.clone(), self.cond.clone(), self.mode.clone(), vec![]);
+    /// Units done, counting partly expanded structure seeds as fractions.
+    pub fn units_done(&self) -> f64 {
+        self.stats.units_done.load(Relaxed) as f64 + self.stats.partial.load(Relaxed) as f64 / 65536.0
+    }
+
+    /// 64-bit seeds one unit stands for.
+    fn seeds_per_unit(&self) -> f64 {
+        if matches!(self.mode, Mode::StructureSeeds { .. }) { 65536.0 } else { 1.0 }
+    }
+
+    /// Runs the search itself for up to `secs` seconds (or until `stop`), measures throughput,
+    /// pre-filter pass rate and match rate, then resets. Must not be called while the search runs.
+    pub fn estimate(&self, secs: f64, threads: usize) -> Value {
         let t = Instant::now();
-        probe.run(0, n, threads);
-        let secs = t.elapsed().as_secs_f64().max(1e-9);
-        let rate = n as f64 / secs;
-        let checks = probe.stats.checks.load(Relaxed).max(1) as f64;
+        let finished = AtomicBool::new(false);
+        let snap = Mutex::new((0.0, 0, 0, 0, 0.0));
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                while !finished.load(Relaxed) && !self.stop.load(Relaxed) && t.elapsed().as_secs_f64() < secs {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                let st = &self.stats;
+                *snap.lock().unwrap() = (self.units_done(), st.matched.load(Relaxed), st.checks.load(Relaxed), st.prefilter_passed.load(Relaxed), t.elapsed().as_secs_f64());
+                self.stop.store(true, Relaxed);
+            });
+            self.run(0, self.mode.units(), threads);
+            finished.store(true, Relaxed);
+        });
+        let (units, matched, checks, passed, secs) = *snap.lock().unwrap();
+        self.reset();
+        if units <= 0.0 {
+            return json!({"note": format!("no seed finished in {secs:.1}s: each one takes longer than that per thread")});
+        }
+        let seeds = units * self.seeds_per_unit();
         json!({
-            "sample": n,
-            "units_per_sec": rate,
-            "prefilter_rate": probe.stats.prefilter_passed.load(Relaxed) as f64 / checks,
-            "matches": probe.stats.matched.load(Relaxed),
-            "match_rate": probe.stats.matched.load(Relaxed) as f64 / n as f64,
-            "seconds_total": self.mode.units() as f64 / rate,
+            "sample": seeds,
+            "seconds": secs,
+            "units_per_sec": units / secs,
+            "seeds_per_sec": seeds / secs,
+            "prefilter_rate": passed as f64 / checks.max(1) as f64,
+            "matches": matched,
+            "match_rate": matched as f64 / seeds,
+            "seconds_total": self.mode.units() as f64 * secs / units,
         })
+    }
+
+    fn reset(&self) {
+        let st = &self.stats;
+        for a in [&st.units_done, &st.checks, &st.prefilter_passed, &st.full_evals, &st.matched, &st.partial] {
+            a.store(0, Relaxed);
+        }
+        self.results.lock().unwrap().clear();
+        self.top.lock().unwrap().clear();
+        *self.error.lock().unwrap() = None;
+        self.stop.store(false, Relaxed);
     }
 }

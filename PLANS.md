@@ -200,3 +200,23 @@ Design of the condition core (search.rs):
 - Structure selectors accept `biome=` (biome at the start position) and `tags=` (all must match).
 - JSON expressions: `{"op":"num","value"}`, `{"op":"add|sub|mul|div","a","b"}`, `{"op":"neg","a"}`,
   any metric node as a leaf. Objectives keep a top-N in Rust (threshold check before pushing).
+
+## Current batch (requested 2026-10-12)
+
+Scope: jungle temple chests, CUDA (seed-only pre-filter + cracking), a block-based query builder with
+an "I want..." wizard (replaces the tree editor), in-app help and a first-start tour, and a UX audit
+(searches that used all CPU without showing progress).
+
+Progress:
+- [x] Stalls: Start ran a hidden 2048-unit calibration first (in structure-seed mode up to
+  ~10^8 full evaluations, not cancellable); progress flushed per block of up to 256 seeds; the map
+  rendered on the GUI thread. Now: Start starts at once with live rarity; Estimate runs the real
+  search for 3 s (Stop works, natives included); stats flush after every full evaluation and
+  sister expansion shows fractional progress; engine panics stop the search with the unit and
+  message; map renders in a thread; result rows are inserted in batches; max results defaults to
+  10k; a hint when structure-seed mode cannot help.
+- [ ] Jungle temple chest seeds.
+- [ ] CUDA: seed-only pre-filter (structure placement, slime) on the GPU, CPU verifies survivors;
+  GPU cracking brute force; GUI checkbox with a "CUDA compatible" status.
+- [ ] Block query builder (nested blocks, sentence-style fields) + wizard; text box stays in sync.
+- [ ] Help viewer (wiki pages in the app) and an optional first-start tour.

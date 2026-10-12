@@ -25,7 +25,9 @@ def cmd_search(a):
 
 
 def run_job(job, a):
-    est = job.estimate(a.sample, a.threads)
+    est = job.estimate(a.sample, a.threads) if a.sample > 0 else {}
+    if "note" in est:
+        print("estimate:", est["note"], file=sys.stderr)
     if "seconds_total" in est:
         r = sft.rarity(est)
         first = fmt_secs(r["seconds_to_first"]) if r["p"] else "> " + fmt_secs(r["seconds_to_first_range"][0])
@@ -44,6 +46,8 @@ def run_job(job, a):
     except KeyboardInterrupt:
         job.stop()
     resume = job.join()
+    if job.stats()["error"]:
+        print("\n" + job.stats()["error"], file=sys.stderr)
     for seed, details in job.poll():
         print(seed, json.dumps(details) if a.details else "")
     print(f"\nstopped; resume with --start-unit {resume}" if resume < job.stats()["units_total"] else "\ndone", file=sys.stderr)
@@ -124,7 +128,7 @@ def main():
     def run_args(s):
         s.add_argument("--threads", type=int, default=os.cpu_count())
         s.add_argument("--max", type=int, default=0, help="stop after this many matches (best N with maximize)")
-        s.add_argument("--sample", type=int, default=2048, help="units timed for the estimate")
+        s.add_argument("--sample", type=float, default=3.0, help="seconds spent estimating first (0 = skip)")
         s.add_argument("--start-unit", type=int, default=0, help="resume point printed by a stopped run")
         s.add_argument("--details", action="store_true", help="print match details")
         s.add_argument("--out", help="write results (.csv/.json/.txt)")

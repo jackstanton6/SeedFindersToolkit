@@ -313,7 +313,7 @@ class Main(QMainWindow):
         self.world = None
         self.job: sft.Job | None = None
         self.resume_unit = 0
-        self.start_after_estimate = False
+        self.estimating = self.hinted = False
         self.panels_added = False
         self.estimated.connect(self._show_estimate)
         self.finished.connect(lambda done, result: done(result))
@@ -330,7 +330,8 @@ class Main(QMainWindow):
         self.count = QLineEdit("10M")
         self.count.setToolTip("units to search; accepts 10k, 2.5M, 1G, 2^48")
         self.threads = QSpinBox(minimum=1, maximum=os.cpu_count() or 1, value=os.cpu_count() or 1)
-        self.max_results = QSpinBox(minimum=0, maximum=10**9, value=0, specialValueText="unlimited")
+        self.max_results = QSpinBox(minimum=0, maximum=10**9, value=10_000, specialValueText="unlimited",
+                                    toolTip="stop after this many matches (with maximize/minimize: keep the best this many)")
         for w in (self.start, self.count):
             w.setFont(MONO)
             w.setMaximumWidth(170)
@@ -513,69 +514,70 @@ class Main(QMainWindow):
             QMessageBox.warning(self, "cannot start", str(e))
             return None
 
-    def _calibrate(self, job):
-        self.say("calibrating (timing a sample)...")
-        threads = self.threads.value()
-
-        def work():
-            try:
-                self.estimated.emit(job.estimate(2048, threads))
-            except Exception as e:
-                self.estimated.emit({"note": f"estimate failed: {e}"})
-        threading.Thread(target=work, daemon=True).start()
-
     def estimate(self):
-        if self.job and self.job.running():
-            return
-        job = self._make_job()
-        if job is not None:
-            self._calibrate(job)
-
-    def _show_estimate(self, est: dict):
-        if "seconds_total" in est:
-            self.stat["est. total"].setText(fmt_secs(est["seconds_total"]))
-            self.stat["est. rate"].setText(f"{fmt_num(est['units_per_sec'])}/s")
-            r = sft.rarity(est)
-            self.stat["match rate"].setText(f"{r['p']:.3g}")
-            self.stat["95% range"].setText(f"{r['low']:.2g}..{r['high']:.2g}")
-            first = fmt_secs(r["seconds_to_first"]) if r["p"] else "> " + fmt_secs(r["seconds_to_first_range"][0])
-            self.stat["first match"].setText(first)
-            self.say(f"estimate: {fmt_num(est['units_per_sec'])} units/s, prefilter pass {est['prefilter_rate']:.3%}, "
-                     f"match rate {r['p']:.3g} (95% {r['low']:.2g}..{r['high']:.2g}), first match ~{first}, "
-                     f"total {fmt_secs(est['seconds_total'])}")
-        else:
-            self.say(est.get("note", "no estimate"))
-        if self.start_after_estimate:
-            self.start_after_estimate = False
-            self.job.start(self.threads.value())
-            self.timer.start()
-            self.say(f"search started: {query.to_text(self.editor.query())}")
-
-    def start_search(self):
-        if self.job and self.job.running():
+        """Runs the search for a few seconds (Stop ends it) and extrapolates totals and rarity."""
+        if self.busy():
             return
         job = self._make_job()
         if job is None:
             return
-        self.job, self.resume_unit = job, 0
+        self.job, self.estimating = job, True
+        self.say("estimating (running the search for 3 s)...")
+        threads = self.threads.value()
+
+        def work():
+            try:
+                self.estimated.emit(job.estimate(3.0, threads))
+            except Exception as e:
+                self.estimated.emit({"note": f"estimate failed: {e}"})
+        threading.Thread(target=work, daemon=True).start()
+
+    def busy(self) -> bool:
+        return self.estimating or bool(self.job and self.job.running())
+
+    def _show_estimate(self, est: dict):
+        self.estimating = False
+        if "seconds_total" in est:
+            self.stat["est. total"].setText(fmt_secs(est["seconds_total"]))
+            self.stat["est. rate"].setText(f"{fmt_num(est['units_per_sec'])}/s")
+            r = self._show_rarity(sft.rarity(est))
+            self.say(f"estimate: {fmt_num(est['units_per_sec'])} units/s, prefilter pass {est['prefilter_rate']:.3%}, "
+                     f"match rate {r}, total {fmt_secs(est['seconds_total'])}")
+        else:
+            self.say(est.get("note", "no estimate"))
+
+    def _show_rarity(self, r: dict) -> str:
+        if not r:
+            return "-"
+        self.stat["match rate"].setText(f"{r['p']:.3g}")
+        self.stat["95% range"].setText(f"{r['low']:.2g}..{r['high']:.2g}")
+        first = fmt_secs(r["seconds_to_first"]) if r["p"] else "> " + fmt_secs(r["seconds_to_first_range"][0])
+        self.stat["first match"].setText(first)
+        return f"{r['p']:.3g} per seed (95% {r['low']:.2g}..{r['high']:.2g}), first match ~{first}"
+
+    def start_search(self):
+        if self.busy():
+            return
+        job = self._make_job()
+        if job is None:
+            return
+        self.job, self.resume_unit, self.hinted = job, 0, False
         self.results.setRowCount(0)
-        self.start_after_estimate = True
-        self._calibrate(job)
+        self.job.start(self.threads.value())
+        self.timer.start()
+        self.say(f"search started: {query.to_text(self.editor.query())}")
 
     def stop_search(self):
         if self.job:
             self.job.stop()
 
     def resume_search(self):
-        if self.job and not self.job.running() and self.resume_unit < self.job.stats()["units_total"]:
+        if self.job and not self.busy() and self.resume_unit < self.job.stats()["units_total"]:
             self.job.start(self.threads.value(), self.resume_unit)
             self.timer.start()
             self.say(f"resumed at unit {self.resume_unit}")
 
     def _add_row(self, seed: int, details: list):
-        if self.results.rowCount() >= MAX_TABLE_ROWS:
-            return
-        self.results.setSortingEnabled(False)
         r = self.results.rowCount()
         self.results.insertRow(r)
         seed_item = QTableWidgetItem()
@@ -588,18 +590,21 @@ class Main(QMainWindow):
         self.results.setItem(r, 1, score_item)
         self.results.setItem(r, 2, QTableWidgetItem(summary(details)))
         self.results.setItem(r, 3, QTableWidgetItem(json.dumps(details)))
-        self.results.setSortingEnabled(True)
 
     def _show_rows(self, new):
+        if not new:
+            return
+        self.results.setSortingEnabled(False)  # once per batch: re-sorting per row freezes big batches
         if self.job.ranked:  # top-N: the kept rows change as better seeds arrive
-            if new:
-                self.results.setRowCount(0)
-                for seed, details in self.job.rows:
-                    self._add_row(seed, details)
-                self.results.sortItems(1, Qt.SortOrder.DescendingOrder)
-        else:
-            for seed, details in new:
+            self.results.setRowCount(0)
+            for seed, details in self.job.rows:
                 self._add_row(seed, details)
+        else:
+            for seed, details in new[: max(0, MAX_TABLE_ROWS - self.results.rowCount())]:
+                self._add_row(seed, details)
+        self.results.setSortingEnabled(True)
+        if self.job.ranked:
+            self.results.sortItems(1, Qt.SortOrder.DescendingOrder)
 
     def _tick(self):
         if self.job is None:
@@ -619,11 +624,20 @@ class Main(QMainWindow):
         self.stat["py rejected"].setText(fmt_num(s["py_rejected"]))
         self.stat["elapsed"].setText(fmt_secs(s["elapsed"]))
         self.stat["eta"].setText(fmt_secs(s["eta"]))
+        if s["units_done"] > 0:
+            self._show_rarity(s["rarity"])
+        if self.job.seeds_per_unit > 1 and s["checks"] > 1000 and s["prefilter_passed"] / s["checks"] > 0.5 and not self.hinted:
+            self.hinted = True
+            self.say("hint: most structure seeds pass this query's pre-check (no rare structure condition), so "
+                     "structure-seed mode checks every sister seed and is no faster than range mode")
         if not self.job.running():
             self.timer.stop()
             self.resume_unit = self.job.join()
             self._show_rows(self.job.poll())  # stragglers after the last tick
             done = self.resume_unit >= s["units_total"]
+            if s["error"]:
+                self.say(s["error"])
+                QMessageBox.warning(self, "search stopped", s["error"])
             self.say(f"search {'finished' if done else f'stopped, resume at unit {self.resume_unit}'}: "
                      f"{fmt_num(s['matched'])} matches, {fmt_num(s['checks'])} checks in {fmt_secs(s['elapsed'])}")
 
@@ -735,7 +749,9 @@ class Main(QMainWindow):
                 return
             found, job = res
             self.say(f"crack: {len(found)} structure seed(s): {' '.join(map(str, found))}")
-            if job:
+            if job and self.busy():
+                self.say("a search is running; stop it and use 'search sister seeds' on a structure seed")
+            elif job:
                 self.job, self.resume_unit = job, 0
                 self.results.setRowCount(0)
                 self.job.start(self.threads.value())
@@ -768,7 +784,7 @@ class Main(QMainWindow):
 
     def sisters(self):
         seed = self._map_seed()
-        if seed is None or (self.job and self.job.running()):
+        if seed is None or self.busy():
             return
         try:
             self.job = sft.Job(self.version.currentText(), self.editor.query(), "list", seeds=sft.sisters([seed]),

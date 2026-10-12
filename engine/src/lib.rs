@@ -283,10 +283,14 @@ mod py {
             self.inner.mode.units()
         }
 
-        /// Runs a short calibration sample; returns JSON with rate, pass rate and total-time estimate.
-        fn estimate(&self, py: Python<'_>, sample: u64, threads: usize) -> String {
+        /// Runs the search for up to `seconds` (stop() ends it early); returns JSON with rate, pass
+        /// rate, match rate and total-time estimate. Results found meanwhile are discarded.
+        fn estimate(&self, py: Python<'_>, seconds: f64, threads: usize) -> PyResult<String> {
+            if self.running() {
+                return Err(PyRuntimeError::new_err("search already running"));
+            }
             let s = self.inner.clone();
-            py.detach(move || s.estimate(sample, threads).to_string())
+            Ok(py.detach(move || s.estimate(seconds, threads).to_string()))
         }
 
         /// Starts (or resumes from `from_unit`) in a background thread.
@@ -327,7 +331,7 @@ mod py {
             let st = &self.inner.stats;
             let elapsed = self.started.lock().unwrap().map_or(0.0, |t| t.elapsed().as_secs_f64());
             std::collections::HashMap::from([
-                ("units_done", st.units_done.load(Relaxed) as f64),
+                ("units_done", self.inner.units_done()),
                 ("units_total", self.inner.mode.units() as f64),
                 ("checks", st.checks.load(Relaxed) as f64),
                 ("prefilter_passed", st.prefilter_passed.load(Relaxed) as f64),
@@ -335,6 +339,12 @@ mod py {
                 ("matched", st.matched.load(Relaxed) as f64),
                 ("elapsed", elapsed),
             ])
+        }
+
+        /// The engine error that stopped the search, if any.
+        #[getter]
+        fn error(&self) -> Option<String> {
+            self.inner.error.lock().unwrap().clone()
         }
 
         /// Drains matches found since the last call: [(seed, details JSON, score)].

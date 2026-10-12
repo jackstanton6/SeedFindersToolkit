@@ -1,4 +1,5 @@
 """Biome/height/structure map of one seed, rendered by the engine. Drag to pan, wheel to zoom."""
+import threading
 import zlib
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
@@ -47,6 +48,7 @@ class MapView(QWidget):
     """Owns view state (seed, centre, scale, y) and re-renders through the engine on change."""
 
     hovered = Signal(str)
+    _rendered = Signal(int, object)  # (generation, result) from the render thread
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,9 +67,13 @@ class MapView(QWidget):
         self.pins: list[tuple[int, int, str]] = []  # scan hits etc.
         self._drag: QPoint | None = None
         self._timer = QTimer(self, singleShot=True, interval=150, timeout=self.render)
+        self._gen = 0  # latest render request; older results are dropped
+        self._rendered.connect(self._apply)
+        self.names: list[str] = []
 
     def set_world(self, world):
         self.world = world
+        self.names = world.biomes()
         self.request()
 
     def show_seed(self, seed: int, x: int | None = None, z: int | None = None):
@@ -80,28 +86,39 @@ class MapView(QWidget):
         self._timer.start()
 
     def render(self):
+        """Renders in a background thread (the engine releases the GIL) so the window stays responsive."""
         if self.world is None:
             return
+        self._gen += 1
+        gen, world, seed, scale, y = self._gen, self.world, self.seed, self.scale, self.y
         w, h = max(self.width() // 2, 16), max(self.height() // 2, 16)  # 2x2 screen pixels per cell
-        x0, z0 = self.cx - w * self.scale // 2, self.cz - h * self.scale // 2
-        palette = [biome_color(n).to_bytes(3, "big") for n in self.world.biomes()]
-        self.ids = self.world.biome_map(self.seed, x0, z0, w, h, self.scale, self.y)
-        rgb = bytearray(b"".join(palette[i] for i in self.ids))
-        if self.show_height:
-            for k, hv in enumerate(self.world.height_map(self.seed, x0, z0, w, h, self.scale)):
-                f = max(0.35, min(1.4, 0.55 + (hv - 40) / 200))  # brightness by surface height
-                for c in range(3):
-                    rgb[3 * k + c] = min(255, int(rgb[3 * k + c] * f))
-        self._rgb = bytes(rgb)  # QImage does not copy; keep the buffer alive
+        x0, z0 = self.cx - w * scale // 2, self.cz - h * scale // 2
+        cx, cz, heights, structs, sets, att = self.cx, self.cz, self.show_height, self.show_structures, list(self.structure_filter), self.attempts_set
+
+        def work():
+            try:
+                palette = [biome_color(n).to_bytes(3, "big") for n in self.names]
+                ids = world.biome_map(seed, x0, z0, w, h, scale, y)
+                rgb = bytearray(b"".join(palette[i] for i in ids))
+                if heights:
+                    for k, hv in enumerate(world.height_map(seed, x0, z0, w, h, scale)):
+                        f = max(0.35, min(1.4, 0.55 + (hv - 40) / 200))  # brightness by surface height
+                        for c in range(3):
+                            rgb[3 * k + c] = min(255, int(rgb[3 * k + c] * f))
+                radius = int(max(w, h) * scale * 0.75)
+                markers = world.structures_near(seed, cx, cz, radius, sets) if structs and sets and radius <= MAX_MARKER_RADIUS else []
+                attempts = world.attempts(seed, att, cx, cz, radius) if att and radius <= MAX_MARKER_RADIUS else []
+                self._rendered.emit(gen, (bytes(rgb), ids, (x0, z0, w, h), markers, attempts))
+            except Exception as e:  # e.g. an unknown set name; keep the old image
+                self._rendered.emit(gen, e)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply(self, gen: int, res):
+        if gen != self._gen or isinstance(res, Exception):
+            return
+        self._rgb, self.ids, self.grid, self.markers, self.attempts = res  # QImage does not copy; keep the buffer alive
+        _, _, w, h = self.grid
         self.image = QImage(self._rgb, w, h, 3 * w, QImage.Format.Format_RGB888)
-        self.grid = (x0, z0, w, h)
-        radius = int(max(w, h) * self.scale * 0.75)
-        self.markers = []
-        if self.show_structures and self.structure_filter and radius <= MAX_MARKER_RADIUS:
-            self.markers = self.world.structures_near(self.seed, self.cx, self.cz, radius, self.structure_filter)
-        self.attempts = []
-        if self.attempts_set and radius <= MAX_MARKER_RADIUS:
-            self.attempts = self.world.attempts(self.seed, self.attempts_set, self.cx, self.cz, radius)
         self.update()
 
     def to_screen(self, x, z) -> QPoint:
@@ -175,7 +192,7 @@ class MapView(QWidget):
             x, z = self.to_world(pos)
             _, _, w, h = self.grid
             i, j = pos.x() * w // max(self.width(), 1), pos.y() * h // max(self.height(), 1)
-            biome = self.world.biomes()[self.ids[j * w + i]].split(":")[-1] if 0 <= i < w and 0 <= j < h else "?"
+            biome = self.names[self.ids[j * w + i]].split(":")[-1] if 0 <= i < w and 0 <= j < h else "?"
             near = [m for m in self.markers if (self.to_screen(m[1], m[3]) - pos).manhattanLength() < 12]
             extra = "  |  " + ", ".join(f"{m[0].split(':')[-1]} ({m[1]}, {m[2]}, {m[3]})" for m in near) if near else ""
             self.hovered.emit(f"x {x}  z {z}  y {self.y}  {biome}{extra}")

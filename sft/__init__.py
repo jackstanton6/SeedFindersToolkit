@@ -60,9 +60,11 @@ class Job:
         self.py_rejected = 0
         # maximize()/minimize(): rows are the best `keep` seeds by score, best first
         self.ranked, self.keep = self.search.ranked, max_results or 100
+        self.seeds_per_unit = 65536 if mode == "structure_seeds" else 1
 
-    def estimate(self, sample=4096, threads=None) -> dict:
-        return json.loads(self.search.estimate(sample, threads or os.cpu_count()))
+    def estimate(self, seconds=3.0, threads=None) -> dict:
+        """Runs the search for `seconds` (stop() ends it early) and extrapolates; see rarity()."""
+        return json.loads(self.search.estimate(seconds, threads or os.cpu_count()))
 
     def start(self, threads=None, from_unit=0):
         self.search.start(threads or os.cpu_count(), from_unit)
@@ -99,6 +101,10 @@ class Job:
         s["progress"] = done / total if total else 1.0
         s["eta"] = (total - done) / s["rate"] if s["rate"] > 0 else None
         s["py_rejected"] = self.py_rejected
+        s["error"] = self.search.error
+        # live rarity: the running search is its own calibration sample
+        seeds = done * self.seeds_per_unit
+        s["rarity"] = rarity({"sample": seeds, "matches": s["matched"], "seeds_per_sec": seeds / elapsed if elapsed > 0 else 0})
         return s
 
 
@@ -131,15 +137,15 @@ def score(details: list) -> float:
 
 
 def rarity(est: dict, z: float = 1.96) -> dict:
-    """Match probability per unit with a 95% Wilson interval, and the expected time to the first
-    match, from an estimate() calibration sample."""
+    """Match probability per 64-bit seed with a 95% Wilson interval, and the expected time to the
+    first match, from an estimate() sample (or live stats)."""
     n, k = est.get("sample", 0), est.get("matches", 0)
     if not n:
         return {}
     p = k / n
     centre, half = (p + z * z / (2 * n)) / (1 + z * z / n), z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
     lo, hi = max(0.0, centre - half), min(1.0, centre + half)
-    rate = est.get("units_per_sec", 0)
+    rate = est.get("seeds_per_sec", 0)
     first = (lambda q: 1 / (q * rate) if q > 0 and rate > 0 else math.inf)
     return {"p": p, "low": lo, "high": hi, "seconds_to_first": first(p), "seconds_to_first_range": (first(hi), first(lo))}
 
