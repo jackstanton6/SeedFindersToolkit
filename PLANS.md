@@ -183,8 +183,7 @@ Progress:
   BlockAgeProcessor, 40 real portals match), frame + chest obsidian, flint and steel, treasure
   diamonds, shipwreck iron, temple + village, close stronghold. Nether parts wait for M4.
 - [x] Docs: Query-Language, Search-Modes, GUI, Accuracy, README, AGENTS.
-- [ ] Left from this batch: chest seeds for jungle temples (per-block stone randomness before the
-  chests); exact frame definitions for broken portal
+- [ ] Left from this batch: exact frame definitions for broken portal
   templates instead of best-frame detection.
 
 Design of the condition core (search.rs):
@@ -215,7 +214,8 @@ Progress:
   sister expansion shows fractional progress; engine panics stop the search with the unit and
   message; map renders in a thread; result rows are inserted in batches; max results defaults to
   10k; a hint when structure-seed mode cannot help.
-- [ ] Jungle temple chest seeds.
+- [x] Jungle temple chest seeds: a constant number of moss-stone nextFloat draws (every block of
+  every box, any chunk) before each container; chests + trap dispensers (9-slot fill), 8 real ones match.
 - [ ] CUDA: seed-only pre-filter (structure placement, slime) on the GPU, CPU verifies survivors;
   GPU cracking brute force; GUI checkbox with a "CUDA compatible" status.
 - [ ] Block query builder (nested blocks, sentence-style fields) + wizard; text box stays in sync.

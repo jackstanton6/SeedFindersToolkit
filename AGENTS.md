@@ -93,7 +93,7 @@ new behaviour "looks" better.
   mode, PyO3 bindings, GUI, plugins, docs.
 - **Tier 1 batch (done, see PLANS.md):** numeric condition core with scores and record hunts,
   clusters/chains/overlaps/bingo, biome-grid and island analysis, terrain scans, slime chunks,
-  single-seed scan, cracking, placement stats, rarity, chest loot for five structure types, ruined
+  single-seed scan, cracking, placement stats, rarity, chest loot for seven structure types, ruined
   portal completeness, speedrun presets (all oracle-verified).
 - **M2:** spawn point (`NoiseSpawnFinder`), surface blocks (material rules), block-level biomes
   (`BiomeManager` zoom).

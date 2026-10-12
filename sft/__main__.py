@@ -157,7 +157,7 @@ def main():
     lo.add_argument("--radius", type=int, default=2000)
     lt = sub.add_parser("loot", help="list chests and their contents near a point")
     lt.add_argument("seed", type=int)
-    lt.add_argument("structure", help="buried_treasure, shipwreck, ruined_portal, igloo, desert_pyramid, ocean_ruin")
+    lt.add_argument("structure", help="buried_treasure, shipwreck, ruined_portal, igloo, desert_pyramid, ocean_ruin, jungle_temple")
     lt.add_argument("--x", type=int, default=0)
     lt.add_argument("--z", type=int, default=0)
     lt.add_argument("--radius", type=int, default=1000)

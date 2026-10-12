@@ -31,6 +31,7 @@ FILL_TABLES = [
     "buried_treasure", "ruined_portal", "shipwreck_map", "shipwreck_supply", "shipwreck_treasure", "desert_pyramid",
     "jungle_temple", "igloo_chest", "underwater_ruin_big", "underwater_ruin_small", "simple_dungeon", "pillager_outpost",
     "stronghold_library", "stronghold_corridor", "woodland_mansion", "ancient_city", "abandoned_mineshaft", "village/village_weaponsmith",
+    "jungle_temple_dispenser",  # 9-slot dispenser
 ]
 WORLD_STRUCTURES = ["buried_treasure", "ruined_portal", "shipwreck", "igloo", "desert_pyramid", "ocean_ruin", "jungle_temple"]
 
@@ -199,7 +200,8 @@ def fill(per_table=24):
             seed = seed - 2**64 if seed >= 2**63 else seed  # signed, both halves
             x, z, y = 2 * (i % 32), 2 * (i // 32 % 32), 100 + 2 * (i // 1024)
             cases.append({"table": f"minecraft:chests/{t}", "seed": seed, "pos": [x, y, z]})
-            cmds.append(f'setblock {x} {y} {z} minecraft:chest{{LootTable:"minecraft:chests/{t}",LootTableSeed:{seed}L}} replace')
+            block = "dispenser" if t.endswith("_dispenser") else "chest"
+            cmds.append(f'setblock {x} {y} {z} minecraft:{block}{{LootTable:"minecraft:chests/{t}",LootTableSeed:{seed}L}} replace')
             cmds.append(f"item replace block {x} {y} {z} container.0 from block {x} {y} {z} container.0")
         for j in range(0, len(cmds), 200):
             srv.run(cmds[j:j + 200])
@@ -212,7 +214,7 @@ def fill(per_table=24):
             be = by_pos.get(tuple(c["pos"]))
             if be is None or "LootTable" in be:
                 raise RuntimeError(f"chest not unpacked: {c} -> {be}")
-            c["slots"] = [None] * 27
+            c["slots"] = [None] * (9 if c["table"].endswith("_dispenser") else 27)
             for it in be.get("Items", []):
                 c["slots"][it["Slot"]] = canonical(it)
     finally:

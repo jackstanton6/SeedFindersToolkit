@@ -16,8 +16,8 @@ the way the server loads them), dumps ground truth for random positions and seed
 | stronghold ring positions | 128 per seed | 0 mismatches |
 | first-piece boxes and piece details (igloo basements, shipwreck and portal templates, ocean ruin size and clusters) | 327 rows | 0 mismatches |
 | slime chunks | 80,000 chunks | 0 mismatches |
-| chest contents (`LootTable.fill`): items, counts, enchantments, damage, potions, stews, horns | 432 chests, 18 tables | 0 mismatches |
-| structure chest loot seeds (buried treasure, shipwrecks, ruined portals, igloo basements, desert pyramids, ocean ruins) | 242 chests, 4 real worlds | 0 mismatches |
+| chest contents (`LootTable.fill`): items, counts, enchantments, damage, potions, stews, horns | 456 containers (incl. 9-slot dispensers), 19 tables | 0 mismatches |
+| structure chest loot seeds (buried treasure, shipwrecks, ruined portals, igloo basements, desert pyramids, ocean ruins, jungle temple chests and trap dispensers) | 250 containers, 4 real worlds | 0 mismatches |
 | ruined portal obsidian after aging (`portal_obsidian`, `portal_frame`) | 40 portals, 4 real worlds | 0 mismatches |
 
 Loot is checked against the official dedicated server, run headless under `cache/oracle-server`

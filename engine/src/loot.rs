@@ -137,16 +137,18 @@ impl Loot {
         self.items.get(id).copied().unwrap_or([64, 0, 0])
     }
 
-    /// LootTable.fill into an empty 27-slot chest. `biome` (at the chest) feeds location_check.
+    /// LootTable.fill into an empty container (27 slots, 9 for dispensers). `biome` (at the chest)
+    /// feeds location_check.
     pub fn fill(&self, table: &str, seed: i64, biome: Option<(u16, &Biomes)>) -> Result<Vec<Option<Stack>>, String> {
         let t = self.tables.get(table).ok_or(format!("unknown loot table '{table}'"))?;
         let mut cx = Cx { l: self, r: JavaRandom::new(seed), biome, chain: vec![], out: vec![] };
         cx.table(t);
         let Cx { mut r, mut out, .. } = cx;
-        let mut slots: Vec<usize> = (0..27).collect();
+        let size = if table.ends_with("_dispenser") { 9 } else { 27 };
+        let mut slots: Vec<usize> = (0..size).collect();
         shuffle(&mut slots, &mut r);
         shuffle_and_split(&mut out, slots.len(), &mut r);
-        let mut chest = vec![None; 27];
+        let mut chest = vec![None; size];
         for s in out {
             let Some(slot) = slots.pop() else { break };
             chest[slot] = (s.count > 0).then_some(s);

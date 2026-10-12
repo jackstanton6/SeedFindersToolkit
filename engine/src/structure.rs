@@ -778,8 +778,10 @@ impl Structures {
                 let dir = r.next_bound(4);
                 let b = scattered_box(x0, z0, dir, *w, *h, *d);
                 *bbox = Some(b);
-                if self.structures[st].name == "minecraft:desert_pyramid" {
-                    *chests = self.pyramid_chests(world_seed, st, b, dir, y);
+                match self.structures[st].name.as_str() {
+                    "minecraft:desert_pyramid" => *chests = self.pyramid_chests(world_seed, st, b, dir, y),
+                    "minecraft:jungle_pyramid" => *chests = self.jungle_chests(world_seed, st, b, dir, y),
+                    _ => {}
                 }
             }
             Kind::OnTop(_, Piece::BuriedTreasure) => {
@@ -940,13 +942,7 @@ impl Structures {
     /// DesertPyramidPiece: every chunk draws nextInt(3) (height offset) first, then one nextLong
     /// per chest it holds, in NORTH, EAST, SOUTH, WEST order. `dir` is the piece orientation.
     fn pyramid_chests(&self, world_seed: i64, st: usize, b: [i32; 6], dir: i32, y: i32) -> Vec<Chest> {
-        let world = |lx: i32, lz: i32| match dir {
-            0 => (b[0] + lx, b[5] - lz),
-            2 => (b[0] + lx, b[2] + lz),
-            3 => (b[3] - lz, b[2] + lx),
-            _ => (b[0] + lz, b[2] + lx),
-        };
-        let pos: Vec<(i32, i32)> = [(10, 8), (12, 10), (10, 12), (8, 10)].iter().map(|&(lx, lz)| world(lx, lz)).collect();
+        let pos: Vec<(i32, i32)> = [(10, 8), (12, 10), (10, 12), (8, 10)].iter().map(|&(lx, lz)| scattered_xz(b, dir, lx, lz)).collect();
         let mut chunks: Vec<(i32, i32)> = pos.iter().map(|p| (p.0 >> 4, p.1 >> 4)).collect();
         chunks.sort();
         chunks.dedup();
@@ -956,6 +952,66 @@ impl Structures {
             r.next_bound(3);
             for p in pos.iter().filter(|p| (p.0 >> 4, p.1 >> 4) == c) {
                 out.push(Chest { pos: (p.0, y - 11, p.1), table: "minecraft:chests/desert_pyramid".into(), seed: r.next_long(), exact: true });
+            }
+        }
+        out
+    }
+
+    /// JungleTemplePiece.postProcess. Every generateBox with the moss-stone selector draws one nextFloat
+    /// per block (skipAir is false, so the count is the same in every chunk and independent of
+    /// terrain); dispensers and chests inside the generating chunk draw their loot seed in source order.
+    fn jungle_chests(&self, world_seed: i64, st: usize, b: [i32; 6], dir: i32, y: i32) -> Vec<Chest> {
+        let vol = |v: &[[i32; 6]]| v.iter().map(|q| (q[3] - q[0] + 1) * (q[4] - q[1] + 1) * (q[5] - q[2] + 1)).sum::<i32>();
+        let mut boxes = vec![
+            [0, -4, 0, 11, 0, 14], [2, 1, 2, 9, 2, 2], [2, 1, 12, 9, 2, 12], [2, 1, 3, 2, 2, 11], [9, 1, 3, 9, 2, 11],
+            [1, 3, 1, 10, 6, 1], [1, 3, 13, 10, 6, 13], [1, 3, 2, 1, 6, 12], [10, 3, 2, 10, 6, 12], [2, 3, 2, 9, 3, 12],
+            [2, 6, 2, 9, 6, 12], [3, 7, 3, 8, 7, 11], [4, 8, 4, 7, 8, 10],
+        ];
+        for z in [0, 14] {
+            boxes.extend([[2, 4, z, 2, 5, z], [4, 4, z, 4, 5, z], [7, 4, z, 7, 5, z], [9, 4, z, 9, 5, z]]);
+        }
+        boxes.push([5, 6, 0, 6, 6, 0]);
+        for x in [0, 11] {
+            boxes.extend((2..=12).step_by(2).map(|z| [x, 4, z, x, 5, z]));
+            boxes.extend([[x, 6, 5, x, 6, 5], [x, 6, 9, x, 6, 9]]);
+        }
+        boxes.extend([
+            [2, 7, 2, 2, 9, 2], [9, 7, 2, 9, 9, 2], [2, 7, 12, 2, 9, 12], [9, 7, 12, 9, 9, 12], [4, 9, 4, 4, 9, 4], [7, 9, 4, 7, 9, 4],
+            [4, 9, 10, 4, 9, 10], [7, 9, 10, 7, 9, 10], [5, 9, 7, 6, 9, 7], [4, 1, 9, 4, 1, 9], [7, 1, 9, 7, 1, 9], [4, 1, 10, 7, 2, 10],
+            [5, 4, 5, 6, 4, 5],
+        ]);
+        boxes.extend((1..=13).step_by(2).map(|z| [1, -3, z, 1, -2, z]));
+        boxes.extend((2..=12).step_by(2).map(|z| [1, -1, z, 3, -1, z]));
+        boxes.extend([[2, -2, 1, 5, -2, 1], [7, -2, 1, 9, -2, 1], [6, -3, 1, 6, -3, 1], [6, -1, 1, 6, -1, 1]]);
+        let (before, between) = (vol(&boxes), vol(&[[9, -1, 1, 9, -1, 5], [8, -3, 8, 8, -3, 10], [10, -3, 8, 10, -3, 10]]));
+        // (local x, y, z, table): trap dispensers, main chest, then the hidden chest after `between` floats
+        let containers = [
+            (3, -2, 1, "minecraft:chests/jungle_temple_dispenser"),
+            (9, -2, 3, "minecraft:chests/jungle_temple_dispenser"),
+            (8, -3, 3, "minecraft:chests/jungle_temple"),
+            (9, -3, 10, "minecraft:chests/jungle_temple"),
+        ];
+        let pos: Vec<(i32, i32)> = containers.iter().map(|c| scattered_xz(b, dir, c.0, c.2)).collect();
+        let mut chunks: Vec<(i32, i32)> = pos.iter().map(|p| (p.0 >> 4, p.1 >> 4)).collect();
+        chunks.sort();
+        chunks.dedup();
+        let mut out = vec![];
+        for c in chunks {
+            let mut r = self.feature_random(world_seed, st, c);
+            for _ in 0..before {
+                r.next_float();
+            }
+            for (i, (p, k)) in pos.iter().zip(&containers).enumerate() {
+                if i == 3 {
+                    for _ in 0..between {
+                        r.next_float();
+                    }
+                }
+                if (p.0 >> 4, p.1 >> 4) == c {
+                    // ponytail: y assumes the box sits at the start height (updateAverageGroundHeight
+                    // averages the first generated chunk); x, z and the seed are exact
+                    out.push(Chest { pos: (p.0, y + k.1, p.1), table: k.3.into(), seed: r.next_long(), exact: true });
+                }
             }
         }
         out
@@ -1086,6 +1142,16 @@ fn portal_frames(obsidian: &[[i32; 3]], size: [i32; 3]) -> Vec<Vec<[i32; 3]>> {
 }
 
 /// ScatteredFeaturePiece box at y=64 (before terrain fitting); direction index NORTH, EAST, SOUTH, WEST.
+/// ScatteredFeaturePiece getWorldX/getWorldZ for local (x, z) in box `b` facing `dir` (N, E, S, W).
+fn scattered_xz(b: [i32; 6], dir: i32, lx: i32, lz: i32) -> (i32, i32) {
+    match dir {
+        0 => (b[0] + lx, b[5] - lz),
+        2 => (b[0] + lx, b[2] + lz),
+        3 => (b[3] - lz, b[2] + lx),
+        _ => (b[0] + lz, b[2] + lx),
+    }
+}
+
 fn scattered_box(x: i32, z: i32, dir: i32, w: i32, h: i32, d: i32) -> [i32; 6] {
     if dir % 2 == 0 { [x, 64, z, x + w - 1, 64 + h - 1, z + d - 1] } else { [x, 64, z, x + d - 1, 64 + h - 1, z + w - 1] }
 }

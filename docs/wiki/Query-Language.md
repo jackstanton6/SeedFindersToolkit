@@ -210,7 +210,8 @@ Uses the game's seed-only formula, so it also works as a 48-bit pre-check.
 How many of `item` are in the chests of a structure: the best single structure, or the sum over
 all of them with `total=True`. `enchant` counts only items carrying that enchantment. Chests are
 generated exactly as the game does (chest seeds and contents), for buried treasure, shipwrecks,
-ruined portals, igloo basements, desert pyramids and ocean ruins (cluster ruins included). Match details include each counted chest with
+ruined portals, igloo basements, desert pyramids, ocean ruins (cluster ruins included) and jungle temples
+(both chests and the arrow dispensers of the traps). Match details include each counted chest with
 its full contents.
 
 ```python

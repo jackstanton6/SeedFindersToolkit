@@ -203,7 +203,7 @@ fn loot_fill_matches() {
         let want = c["slots"].as_array().unwrap();
         if got != *want {
             if bad < 3 {
-                let diff: Vec<_> = (0..27).filter(|&i| got[i] != want[i]).map(|i| format!("slot {i}: got {} want {}", got[i], want[i])).collect();
+                let diff: Vec<_> = (0..got.len().min(want.len())).filter(|&i| got[i] != want[i]).map(|i| format!("slot {i}: got {} want {}", got[i], want[i])).collect();
                 eprintln!("{table} seed {seed}:\n  {}", diff.join("\n  "));
             }
             bad += 1;
@@ -227,7 +227,7 @@ fn structure_chests_match() {
             (c[0].as_i64().unwrap() as i32, c[2].as_i64().unwrap() as i32, c[4].as_str().unwrap().to_string(), c[5].as_i64().unwrap())
         }).collect();
         let mut ev = sft_engine::query::Eval::new(w, seed, &[]);
-        for name in ["buried_treasure", "ruined_portal", "shipwreck", "igloo", "desert_pyramid", "ocean_ruin"] {
+        for name in ["buried_treasure", "ruined_portal", "shipwreck", "igloo", "desert_pyramid", "ocean_ruin", "jungle_temple"] {
             let (set, only) = w.structures.resolve(name).unwrap();
             for h in ev.instances(set, only, (0, 0), r) {
                 for c in &h.chests {
