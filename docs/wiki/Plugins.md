@@ -23,7 +23,7 @@ The two examples, `plugins/example_rust` and `plugins/example_python`, are compl
 | Call | Signature of what you pass | Appears as |
 |---|---|---|
 | `api.condition(name, fn)` | `fn(world, seed, **params) -> bool` | `py("my_plugin.name", key=value)` in queries |
-| `api.seed_source(name, fn)` | `fn() -> iterable of int` | mode `plugin: my_plugin.name` (first `count` seeds) |
+| `api.seed_source(name, fn)` | `fn() -> iterable of int` | mode `plugin: my_plugin.name` (first `to - from + 1` seeds) |
 | `api.exporter(name, fn, ext)` | `fn(rows, path)`; rows are `(seed, details)` | an extra format in Export |
 | `api.panel(title, factory)` | `factory(main_window) -> QWidget` | a tab in the bottom dock |
 

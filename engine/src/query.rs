@@ -463,14 +463,20 @@ fn footprint(h: &Hit, afk: bool) -> Vec<(i32, i32)> {
 /// Most groups (each all of its points) a circle of radius `r` can cover, with its centre within
 /// `within` of `at`, and which groups. The feasible centres for any subset form a convex region
 /// whose leftmost point is a circle-circle intersection or the leftmost point of one circle, so
-/// those are the only candidates.
-// ponytail: O(n^3) in the point count; fine for the few dozen starts a query sees.
-fn max_cover(groups: &[Vec<(i32, i32)>], r: i32, at: (i32, i32), within: i32) -> (usize, Vec<usize>) {
+/// those are the only candidates. Points and groups are bucketed in cells of 2r, so only nearby
+/// pairs are tried; candidates and members come out in the same order as an all-pairs scan.
+/// Stops early once `enough` groups are covered.
+fn max_cover(groups: &[Vec<(i32, i32)>], r: i32, at: (i32, i32), within: i32, enough: usize) -> (usize, Vec<usize>) {
     let mut circles: Vec<(f64, f64, f64)> = groups.iter().flatten().map(|p| (p.0 as f64, p.1 as f64, r as f64)).collect();
+    let pts = Buckets::new(circles.iter().map(|c| (c.0, c.1)), 2 * r);
+    let firsts = Buckets::new(groups.iter().map(|g| (g[0].0 as f64, g[0].1 as f64)), 2 * r);
+    let last = circles.len();
     circles.push((at.0 as f64, at.1 as f64, within as f64));
     let mut cands: Vec<(f64, f64)> = circles.iter().map(|c| (c.0 - c.2, c.1)).collect();
-    for i in 0..circles.len() {
-        for j in i + 1..circles.len() {
+    for i in 0..last {
+        // circles farther than 2r apart do not intersect; the `at` circle pairs with every point
+        let near = pts.near((circles[i].0, circles[i].1));
+        for j in near.into_iter().filter(|&j| j > i).chain([last]) {
             let ((x0, z0, r0), (x1, z1, r1)) = (circles[i], circles[j]);
             let d = ((x1 - x0).powi(2) + (z1 - z0).powi(2)).sqrt();
             if d == 0.0 || d > r0 + r1 || d < (r0 - r1).abs() {
@@ -489,12 +495,45 @@ fn max_cover(groups: &[Vec<(i32, i32)>], r: i32, at: (i32, i32), within: i32) ->
         if !inside(c, (at.0 as f64, at.1 as f64), within as f64) {
             continue;
         }
-        let members: Vec<usize> = (0..groups.len()).filter(|&g| groups[g].iter().all(|p| inside(c, (p.0 as f64, p.1 as f64), r as f64))).collect();
+        let members: Vec<usize> = firsts.near(c).into_iter().filter(|&g| groups[g].iter().all(|p| inside(c, (p.0 as f64, p.1 as f64), r as f64))).collect();
         if members.len() > best.0 {
             best = (members.len(), members);
+            if best.0 >= enough {
+                break;
+            }
         }
     }
     best
+}
+
+/// Point indices bucketed by square cells: everything within `cell` of a point is in the 3x3
+/// cells around it.
+struct Buckets {
+    cell: f64,
+    map: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl Buckets {
+    fn new(pts: impl Iterator<Item = (f64, f64)>, cell: i32) -> Self {
+        let mut b = Buckets { cell: cell.max(1) as f64, map: HashMap::new() };
+        for (i, p) in pts.enumerate() {
+            let k = b.key(p);
+            b.map.entry(k).or_default().push(i);
+        }
+        b
+    }
+
+    fn key(&self, p: (f64, f64)) -> (i64, i64) {
+        ((p.0 / self.cell).floor() as i64, (p.1 / self.cell).floor() as i64)
+    }
+
+    /// Indices in the 3x3 cells around `p`, ascending.
+    fn near(&self, p: (f64, f64)) -> Vec<usize> {
+        let (kx, kz) = self.key(p);
+        let mut v: Vec<usize> = (-1..=1).flat_map(|i| (-1..=1).map(move |j| (kx + i, kz + j))).filter_map(|k| self.map.get(&k)).flatten().copied().collect();
+        v.sort_unstable();
+        v
+    }
 }
 
 fn boxes_overlap(a: &Hit, b: &Hit, margin: i32) -> bool {
@@ -553,6 +592,14 @@ impl Grid {
 // Per-seed evaluation
 // ------------------------------------------------------------------------------------------------
 
+type ClusterKey = (usize, i64, Vec<usize>, i32, (i32, i32), i32, u64);
+type ClusterMemo = Vec<(ClusterKey, Vec<Vec<(i32, i32)>>)>;
+
+thread_local! {
+    /// `Eval::cluster_chunks` of recent random-spread clusters, by low 48 bits and parameters.
+    static CLUSTER_CHUNKS: std::cell::RefCell<ClusterMemo> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub struct Eval<'w> {
     pub w: &'w World,
     pub seed: i64,
@@ -604,15 +651,27 @@ impl<'w> Eval<'w> {
 
     /// Valid starts of `set` (optionally only one structure of it) within `r` of `at`, nearest first.
     pub fn instances(&mut self, set: usize, only: Option<usize>, at: (i32, i32), r: i32) -> Vec<Hit> {
+        let chunks = self.attempts(set, at, r);
+        self.instances_of(set, only, at, chunks)
+    }
+
+    /// `instances` among the given placement chunks.
+    fn instances_of(&mut self, set: usize, only: Option<usize>, at: (i32, i32), chunks: Vec<(i32, i32)>) -> Vec<Hit> {
         let w = self.w;
-        let mut out: Vec<Hit> = self.attempts(set, at, r).into_iter().filter_map(|c| self.hit(set, c)).filter(|h| only.is_none_or(|o| o == h.structure)).collect();
+        let mut out: Vec<Hit> = chunks.into_iter().filter_map(|c| self.hit(set, c)).filter(|h| only.is_none_or(|o| o == h.structure)).collect();
         out.sort_by_key(|h| dist2(locate(w, set, h.chunk), at));
         out
     }
 
     /// Starts matching a selector (set, structure, start biome, tags), nearest first.
     pub fn select(&mut self, s: &Sel, at: (i32, i32), r: i32) -> Vec<Hit> {
-        let mut v = self.instances(s.set, s.only, at, r);
+        let chunks = self.attempts(s.set, at, r);
+        self.select_of(s, at, chunks)
+    }
+
+    /// `select` among the given placement chunks.
+    fn select_of(&mut self, s: &Sel, at: (i32, i32), chunks: Vec<(i32, i32)>) -> Vec<Hit> {
+        let mut v = self.instances_of(s.set, s.only, at, chunks);
         v.retain(|h| s.tags.iter().all(|t| h.tags.iter().any(|ht| ht.starts_with(t.as_str()))));
         if let Some(b) = s.biomes {
             self.seeded();
@@ -631,6 +690,63 @@ impl<'w> Eval<'w> {
         if !self.details.contains(&d) {
             self.details.push(d);
         }
+    }
+
+    /// Largest `Structures::reach` of the selectors' sets.
+    fn reach(&self, sels: &[Sel]) -> i32 {
+        sels.iter().map(|s| self.w.structures.reach(s.set)).max().unwrap_or(128)
+    }
+
+    /// Most starts one circle of radius `dist` covers. When only values >= `need` matter, starts
+    /// with fewer than need - 1 placement chunks within 2 (dist + reach) are never generated: they
+    /// cannot be in such a cover. The count is then exact whenever it reaches `need`; which cover
+    /// is reported can differ between equally large ones.
+    #[allow(clippy::too_many_arguments)]
+    fn cluster(&mut self, sels: &[Sel], dist: i32, at: (i32, i32), within: i32, afk: bool, need: f64, note: bool) -> f64 {
+        // random-spread chunks depend on the low 48 bits only, so sister seeds reuse them
+        let key = sels.iter().all(|s| self.spread(s)).then(|| (self.w as *const World as usize, self.seed & ((1 << 48) - 1), sels.iter().map(|s| s.set).collect(), dist, at, within, need.to_bits()));
+        let cached = key.as_ref().and_then(|k| CLUSTER_CHUNKS.with(|m| m.borrow().iter().find(|e| e.0 == *k).map(|e| e.1.clone())));
+        let chunks = cached.unwrap_or_else(|| {
+            let c = self.cluster_chunks(sels, dist, at, within, need);
+            if let Some(k) = key {
+                CLUSTER_CHUNKS.with(|m| {
+                    let mut m = m.borrow_mut();
+                    if m.len() >= 4 {
+                        m.remove(0);
+                    }
+                    m.push((k, c.clone()));
+                });
+            }
+            c
+        });
+        let hits: Vec<Hit> = sels.iter().zip(chunks).flat_map(|(s, cs)| self.select_of(s, at, cs)).collect();
+        let groups: Vec<Vec<(i32, i32)>> = hits.iter().map(|h| footprint(h, afk)).collect();
+        let (n, members) = max_cover(&groups, dist, at, within, usize::MAX);
+        if note {
+            members.iter().for_each(|&i| self.note(&hits[i]));
+        }
+        n as f64
+    }
+
+    /// Placement chunks per selector that `cluster` generates (see there).
+    fn cluster_chunks(&mut self, sels: &[Sel], dist: i32, at: (i32, i32), within: i32, need: f64) -> Vec<Vec<(i32, i32)>> {
+        let w = self.w;
+        let slack = self.reach(sels);
+        let mut chunks: Vec<Vec<(i32, i32)>> = sels.iter().map(|s| self.attempts(s.set, at, within + dist + slack)).collect();
+        if need >= 2.0 {
+            let pts: Vec<(f64, f64)> = sels.iter().zip(&chunks).flat_map(|(s, cs)| cs.iter().map(move |&c| locate(w, s.set, c))).map(|p| (p.0 as f64, p.1 as f64)).collect();
+            let r = 2 * (dist + slack);
+            let b = Buckets::new(pts.iter().copied(), r);
+            let mut k = 0;
+            for cs in &mut chunks {
+                cs.retain(|_| {
+                    let p = pts[k];
+                    k += 1;
+                    b.near(p).iter().filter(|&&j| (pts[j].0 - p.0).powi(2) + (pts[j].1 - p.1).powi(2) <= (r as f64).powi(2)).count() as f64 >= need
+                });
+            }
+        }
+        chunks
     }
 
     fn spread(&self, s: &Sel) -> bool {
@@ -654,8 +770,9 @@ impl<'w> Eval<'w> {
                     n as f64 >= *min
                 }
                 Metric::Cluster { sels, dist, at, within, .. } if sels.iter().all(|s| self.spread(s)) => {
-                    let groups: Vec<Vec<(i32, i32)>> = sels.iter().flat_map(|s| pot(s, *at, within + dist + 128).into_iter().map(move |c| vec![loc(s, c)])).collect();
-                    groups.len() as f64 >= *min && max_cover(&groups, dist + 128, *at, within + 128).0 as f64 >= *min
+                    let slack = self.reach(sels);
+                    let groups: Vec<Vec<(i32, i32)>> = sels.iter().flat_map(|s| pot(s, *at, within + dist + slack).into_iter().map(move |c| vec![loc(s, c)])).collect();
+                    groups.len() as f64 >= *min && max_cover(&groups, dist + slack, *at, within + slack, min.ceil() as usize).0 as f64 >= *min
                 }
                 Metric::Slime { radius, at, within } => self.slime_max(*radius, *at, *within) as f64 >= *min,
                 Metric::Loot { s, at, within, .. } if self.spread(s) => !pot(s, *at, *within).is_empty(),
@@ -690,7 +807,10 @@ impl<'w> Eval<'w> {
             Cond::Not(c) => !self.eval(c),
             Cond::Metric { m, min, max } => {
                 let before = self.details.len();
-                let v = self.value(m, true);
+                let v = match m {
+                    Metric::Cluster { sels, dist, at, within, afk } => self.cluster(sels, *dist, *at, *within, *afk, *min, true),
+                    _ => self.value(m, true),
+                };
                 let ok = v >= *min && v <= *max;
                 if !ok {
                     self.details.truncate(before);
@@ -782,15 +902,7 @@ impl<'w> Eval<'w> {
                 }
                 n
             }
-            Metric::Cluster { sels, dist, at, within, afk } => {
-                let hits: Vec<Hit> = sels.iter().flat_map(|s| self.select(s, *at, within + dist + 128)).collect();
-                let groups: Vec<Vec<(i32, i32)>> = hits.iter().map(|h| footprint(h, *afk)).collect();
-                let (n, members) = max_cover(&groups, *dist, *at, *within);
-                if note {
-                    members.iter().for_each(|&i| self.note(&hits[i]));
-                }
-                n as f64
-            }
+            Metric::Cluster { sels, dist, at, within, afk } => self.cluster(sels, *dist, *at, *within, *afk, 0.0, note),
             Metric::Chain { sels, dist, at, within } => {
                 // longest prefix a -> b -> c ..., each start within `dist` of the previous one
                 let mut best: Vec<Hit> = vec![];
@@ -1102,13 +1214,58 @@ mod tests {
     fn max_cover_finds_tight_cluster() {
         // four points on a 200-wide square fit a radius-142 circle, not a radius-140 one
         let g: Vec<Vec<(i32, i32)>> = vec![vec![(0, 0)], vec![(200, 0)], vec![(0, 200)], vec![(200, 200)], vec![(900, 900)]];
-        assert_eq!(max_cover(&g, 142, (0, 0), 1000).0, 4);
-        assert_eq!(max_cover(&g, 140, (0, 0), 1000).0, 2);
+        assert_eq!(max_cover(&g, 142, (0, 0), 1000, usize::MAX).0, 4);
+        assert_eq!(max_cover(&g, 140, (0, 0), 1000, usize::MAX).0, 2);
         // centre within 50 of the origin is >= 150 from every other point
-        assert_eq!(max_cover(&g, 142, (0, 0), 50).0, 1);
+        assert_eq!(max_cover(&g, 142, (0, 0), 50, usize::MAX).0, 1);
         // afk groups need all their points inside: (0,0)..(260,10) spans 260.2
         let afk = vec![vec![(0, 0), (10, 10)], vec![(250, 0), (260, 10)]];
-        assert_eq!(max_cover(&afk, 131, (0, 0), 1000).0, 2);
-        assert_eq!(max_cover(&afk, 129, (0, 0), 1000).0, 1);
+        assert_eq!(max_cover(&afk, 131, (0, 0), 1000, usize::MAX).0, 2);
+        assert_eq!(max_cover(&afk, 129, (0, 0), 1000, usize::MAX).0, 1);
+    }
+
+    #[test]
+    fn max_cover_matches_all_pairs() {
+        // the bucketed scan must give the same count and members as trying every pair
+        let brute = |groups: &[Vec<(i32, i32)>], r: i32, at: (i32, i32), within: i32| {
+            let mut c: Vec<(f64, f64, f64)> = groups.iter().flatten().map(|p| (p.0 as f64, p.1 as f64, r as f64)).collect();
+            c.push((at.0 as f64, at.1 as f64, within as f64));
+            let mut cands: Vec<(f64, f64)> = c.iter().map(|c| (c.0 - c.2, c.1)).collect();
+            for i in 0..c.len() {
+                for j in i + 1..c.len() {
+                    let ((x0, z0, r0), (x1, z1, r1)) = (c[i], c[j]);
+                    let d = ((x1 - x0).powi(2) + (z1 - z0).powi(2)).sqrt();
+                    if d == 0.0 || d > r0 + r1 || d < (r0 - r1).abs() {
+                        continue;
+                    }
+                    let a = (r0 * r0 - r1 * r1 + d * d) / (2.0 * d);
+                    let h = (r0 * r0 - a * a).max(0.0).sqrt();
+                    let (mx, mz) = (x0 + a * (x1 - x0) / d, z0 + a * (z1 - z0) / d);
+                    cands.push((mx - h * (z1 - z0) / d, mz + h * (x1 - x0) / d));
+                    cands.push((mx + h * (z1 - z0) / d, mz - h * (x1 - x0) / d));
+                }
+            }
+            let inside = |c: (f64, f64), p: (f64, f64), r: f64| (p.0 - c.0).powi(2) + (p.1 - c.1).powi(2) <= r * r + 1e-6;
+            let mut best = (0, vec![]);
+            for c in cands.into_iter().filter(|&c| inside(c, (at.0 as f64, at.1 as f64), within as f64)) {
+                let m: Vec<usize> = (0..groups.len()).filter(|&g| groups[g].iter().all(|p| inside(c, (p.0 as f64, p.1 as f64), r as f64))).collect();
+                if m.len() > best.0 {
+                    best = (m.len(), m);
+                }
+            }
+            best
+        };
+        let mut rng = JavaRandom::new(7);
+        for case in 0..300 {
+            let (n, span, afk) = (1 + rng.next_bound(40), 200 + rng.next_bound(3000), case % 2 == 0);
+            let groups: Vec<Vec<(i32, i32)>> = (0..n)
+                .map(|_| {
+                    let (x, z) = (rng.next_bound(span) - span / 2, rng.next_bound(span) - span / 2);
+                    if afk { vec![(x, z), (x + 8, z), (x, z + 6), (x + 8, z + 6)] } else { vec![(x, z)] }
+                })
+                .collect();
+            let (r, within) = (20 + rng.next_bound(300), rng.next_bound(span));
+            assert_eq!(max_cover(&groups, r, (0, 0), within, usize::MAX), brute(&groups, r, (0, 0), within), "case {case}");
+        }
     }
 }

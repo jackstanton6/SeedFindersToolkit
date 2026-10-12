@@ -1,6 +1,7 @@
 """Main window: block query editor (+ DSL text), search controls, live stats, results, map, plugins, help."""
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -31,7 +32,18 @@ def parse_count(text: str) -> int:
         b, e = t.split("^")
         return int(b) ** int(e)
     mult = {"k": 10**3, "m": 10**6, "g": 10**9, "t": 10**12}.get(t[-1:].lower(), 1)
-    return int(float(t[:-1] if mult > 1 else t) * mult)
+    return int(float(t[:-1]) * mult) if mult > 1 else int(t)
+
+
+# search mode -> its unit; FULL: valid from/to per unit (upper16: the upper bits, lower48: the lower bits)
+MODES = {"range (64-bit)": "range", "lower 48 bits (fixed upper 16)": "lower48", "upper 16 bits (sisters of a seed)": "upper16",
+         "structure seeds (48-bit) + sisters": "structure_seeds", "seed list file": "list"}
+FULL = {"range": (-2**63, 2**63 - 1), "lower48": (0, 2**48 - 1), "upper16": (0, 2**16 - 1), "structure_seeds": (0, 2**48 - 1)}
+RANGES = ["first 10M", "full range", "32-bit (text seeds)", "custom"]
+
+
+def signed64(v: int) -> int:
+    return v - 2**64 if v >= 2**63 else v
 
 
 def fmt_secs(s) -> str:
@@ -86,25 +98,32 @@ class Main(QMainWindow):
         self.version.addItems(sft.versions() or [version])
         self.version.setCurrentText(version)
         self.mode = QComboBox()
-        self.start = QLineEdit("0")
-        self.count = QLineEdit("10M")
-        self.count.setToolTip("units to search; accepts 10k, 2.5M, 1G, 2^48")
+        self.range = QComboBox()
+        self.range.addItems(RANGES)
+        self.lo, self.hi, self.fixed = QLineEdit("0"), QLineEdit("9999999"), QLineEdit("0", enabled=False)
+        self.shuffle = QCheckBox("shuffle", toolTip="visit the range in a random order (every seed once, no repeats)")
         self.threads = QSpinBox(minimum=1, maximum=os.cpu_count() or 1, value=os.cpu_count() or 1)
         self.max_results = QSpinBox(minimum=0, maximum=10**9, value=10_000, specialValueText="unlimited",
                                     toolTip="stop after this many matches (with maximize/minimize: keep the best this many)")
-        for w in (self.start, self.count):
+        for w in (self.lo, self.hi, self.fixed):
             w.setFont(MONO)
             w.setMaximumWidth(170)
+        for w in (self.lo, self.hi):
+            w.textEdited.connect(lambda _: self.range.setCurrentText("custom"))
+        self.mode.currentTextChanged.connect(self._mode_changed)
+        self.range.currentTextChanged.connect(self._apply_range)
         tips = {"version": "Minecraft version (prepared data folders)", "mode": "which seeds to search (Help > Search modes)",
-                "start": "first seed (or structure seed / random generator seed)", "count": "how many seeds; accepts 10k, 2.5M, 1G, 2^48",
+                "range": "fills from/to; the full range depends on the mode", "from": "first seed (inclusive); accepts 10k, 2.5M, 2^48",
+                "to": "last seed (inclusive)", "fixed": "the part of the seed the mode keeps fixed",
                 "threads": "CPU threads", "max": "stop after this many matches (best N when ranking)"}
-        for label, w in (("version", self.version), ("mode", self.mode), ("start", self.start), ("count", self.count),
-                         ("threads", self.threads), ("max", self.max_results)):
+        for label, w in (("version", self.version), ("mode", self.mode), ("range", self.range), ("from", self.lo), ("to", self.hi),
+                         ("fixed", self.fixed), ("threads", self.threads), ("max", self.max_results)):
             lab = QLabel(f" {label} ")
             lab.setToolTip(tips[label])
             w.setToolTip(w.toolTip() or tips[label])
             bar.addWidget(lab)
             bar.addWidget(w)
+        bar.addWidget(self.shuffle)
         self.use_gpu = QCheckBox("GPU", enabled=False, toolTip="run the seed-only part of the query (structure placement, slime chunks) on the GPU")
         self.gpu_status = QLabel(" checking CUDA… ")
         self.gpu_status.setStyleSheet("color: #9aa8b8")
@@ -259,7 +278,8 @@ class Main(QMainWindow):
             (e.summary, "4. In plain words", "What the query finds, in words. The text box above it is the same query as text, for "
              "copying or sharing; edits there update the blocks."),
             (self.toolbar, "5. What to search", "mode picks the seeds: a range, structure seeds (much faster for structure queries), "
-             "random seeds or a list. count is how many (10M, 2^48…). Tick GPU when it says “CUDA compatible”."),
+             "the sisters of one seed or a list. range and from/to set which seeds (10M, 2^48…); shuffle visits them in a random "
+             "order. Tick GPU when it says “CUDA compatible”."),
             (self.actions_bar["Estimate"], "6. Estimate, then Start", "Estimate runs the search for 3 seconds and tells you how long the "
              "whole range takes and how rare matches are. Start runs it; Stop and Resume pick up exactly where you left off."),
             (self.stats_box, "7. Live progress", "Progress, speed, time left, matches found and the expected time to the next match."),
@@ -309,8 +329,7 @@ class Main(QMainWindow):
         self.loaded = plugins.load(version)
         found, api = self.loaded
         self.mode.clear()
-        self.mode.addItems(["range (64-bit)", "structure seeds (48-bit) + sisters", "random", "seed list file"]
-                           + [f"plugin: {n}" for n in api.seed_sources])
+        self.mode.addItems(list(MODES) + [f"plugin: {n}" for n in api.seed_sources])
         self.plugin_table.setRowCount(0)
         for p in found:
             r = self.plugin_table.rowCount()
@@ -343,25 +362,53 @@ class Main(QMainWindow):
         self.say(f"loaded {version}: {len(self.world.biomes())} biomes, {len(self.world.structures())} structures, {len(found)} plugin(s)")
 
     # search
+    def _mode_changed(self, text: str):
+        kind = MODES.get(text)
+        self.fixed.setEnabled(kind in ("lower48", "upper16"))
+        self.fixed.setToolTip({"lower48": "upper 16 bits kept fixed (0 – 65535)",
+                               "upper16": "seed or structure seed whose lower 48 bits are kept"}.get(kind, "not used in this mode"))
+        self._apply_range(self.range.currentText())
+
+    def _apply_range(self, name: str):
+        if name == "custom":
+            return
+        lo, hi = FULL.get(MODES.get(self.mode.currentText()), FULL["range"])
+        lo, hi = {"first 10M": (0, min(hi, 10**7 - 1)), "full range": (lo, hi), "32-bit (text seeds)": (-2**31, 2**31 - 1)}[name]
+        self.lo.setText(str(lo))
+        self.hi.setText(str(hi))
+
     def _make_job(self) -> sft.Job | None:
         if self.world is None:
             return None
         try:
-            mode_text, seeds, mode = self.mode.currentText(), None, "range"
-            if mode_text.startswith("structure"):
-                mode = "structure_seeds"
-            elif mode_text.startswith("random"):
-                mode = "random"
-            elif mode_text.startswith("seed list"):
+            mode_text = self.mode.currentText()
+            kind = MODES.get(mode_text, "plugin")
+            lo, hi = parse_count(self.lo.text()), parse_count(self.hi.text())
+            first, last = FULL.get(kind, FULL["range"])
+            if not first <= lo <= hi <= last:
+                raise ValueError(f"from/to must be within {first} … {last} in this mode, with from ≤ to")
+            # ponytail: all 2^64 seeds don't fit a u64 count, so "full range" skips the very last seed
+            start, count, seeds, mode = lo, min(hi - lo + 1, 2**64 - 1), None, "range"
+            if kind == "lower48":
+                upper = parse_count(self.fixed.text())
+                if not 0 <= upper < 2**16:
+                    raise ValueError("fixed upper 16 bits must be 0 … 65535")
+                start = signed64(upper << 48 | lo)
+            elif kind == "upper16":
+                low = parse_count(self.fixed.text()) & (2**48 - 1)
+                seeds, mode = [signed64(u << 48 | low) for u in range(lo, hi + 1)], "list"
+            elif kind == "structure_seeds":
+                mode = kind
+            elif kind == "list":
                 path, _ = QFileDialog.getOpenFileName(self, "seed list (one per line)")
                 if not path:
                     return None
                 seeds, mode = [int(x) for x in open(path).read().split()], "list"
-            elif mode_text.startswith("plugin: "):
+            elif kind == "plugin":
                 src = self.loaded[1].seed_sources[mode_text.removeprefix("plugin: ")]
-                seeds, mode = [s for _, s in zip(range(parse_count(self.count.text())), src())], "list"
-            job = sft.Job(self.version.currentText(), self.editor.query(), mode, int(self.start.text()),
-                          parse_count(self.count.text()), seeds, self.max_results.value(), self.loaded, gpu=self.use_gpu.isChecked())
+                seeds, mode = [s for _, s in zip(range(count), src())], "list"
+            job = sft.Job(self.version.currentText(), self.editor.query(), mode, start, count, seeds, self.max_results.value(),
+                          self.loaded, gpu=self.use_gpu.isChecked(), shuffle=random.getrandbits(64) if self.shuffle.isChecked() else None)
             if job.gpu_note:
                 self.say(job.gpu_note)
             return job

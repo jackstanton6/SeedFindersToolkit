@@ -195,17 +195,19 @@ impl Gpu {
         Ok(count)
     }
 
-    /// Offsets in [0, n) of the search units base..base+n passing the program (sorted). `mode`: 0 range,
-    /// 1 structure seeds, 2 random (seed = splitmix(rng + unit)).
-    pub fn filter(&self, prog: &[i32], mode: i32, base: u64, n: u64, rng: u64) -> Result<Vec<u32>, String> {
+    /// Offsets in [0, n) of the search units lo..lo+n passing the program (sorted). `mode`: 0 range
+    /// (seed = base + unit), 1 structure seeds, 2 random (seed = splitmix(base + unit)). `shuffle`:
+    /// (total units, key) as in search.rs `permute`.
+    pub fn filter(&self, prog: &[i32], mode: i32, base: u64, lo: u64, n: u64, shuffle: Option<(u64, u64)>) -> Result<Vec<u32>, String> {
         let mut b = self.bufs.lock().unwrap();
+        let (mut total, mut key) = shuffle.unwrap_or((0, 0));
         // SAFETY: argument pointers live until the synchronous launch returns; buffers hold n entries.
         unsafe {
             self.prepare(&mut b, prog, n as usize * 4)?;
-            let (mut base, mut n, mut mode, mut rng, mut out, mut count, mut cap) = (base, n, mode, rng, b.out, b.count, n as u32);
-            let mut args: [*mut c_void; 7] = [
-                &mut base as *mut _ as _, &mut n as *mut _ as _, &mut mode as *mut _ as _, &mut rng as *mut _ as _,
-                &mut out as *mut _ as _, &mut count as *mut _ as _, &mut cap as *mut _ as _,
+            let (mut lo, mut base, mut n, mut mode, mut out, mut count, mut cap) = (lo, base, n, mode, b.out, b.count, n as u32);
+            let mut args: [*mut c_void; 9] = [
+                &mut lo as *mut _ as _, &mut n as *mut _ as _, &mut mode as *mut _ as _, &mut base as *mut _ as _,
+                &mut total as *mut _ as _, &mut key as *mut _ as _, &mut out as *mut _ as _, &mut count as *mut _ as _, &mut cap as *mut _ as _,
             ];
             let k = self.launch(&b, self.filter, n, &mut args)?.min(cap) as usize;
             let mut v = vec![0u32; k];
@@ -295,7 +297,16 @@ fn clauses(w: &World, c: &Cond) -> Vec<Vec<Atom>> {
                 let others = if a.set == b.set { 2.0 } else { 1.0 };
                 [count_atom(w, a, *at, *within, *min), count_atom(w, b, *at, within + dist + 128, others)].into_iter().flat_map(one).collect()
             }
-            Metric::Cluster { sels, dist, at, within, .. } if sels.len() == 1 => one(count_atom(w, &sels[0], *at, within + dist + 128, *min)),
+            Metric::Cluster { sels, dist, at, within, .. } if sels.len() == 1 => {
+                let slack = w.structures.reach(sels[0].set);
+                one(count_atom(w, &sels[0], *at, within + dist + slack, *min).map(|mut a| {
+                    if *min >= 2.0 {
+                        a[0] = 3;
+                        a[13] = 2 * (dist + slack);
+                    }
+                    a
+                }))
+            }
             Metric::Slime { radius, at, within } => {
                 let mut a = [0; ATOM];
                 a[..6].copy_from_slice(&[1, *radius, at.0, at.1, *within, min.ceil().min(1e6) as i32]);
@@ -308,7 +319,7 @@ fn clauses(w: &World, c: &Cond) -> Vec<Vec<Atom>> {
 }
 
 fn encode(mut cl: Vec<Vec<Atom>>) -> Vec<i32> {
-    cl.sort_by_key(|c| c.iter().any(|a| a[0] == 1)); // slime scans are the expensive ones: last
+    cl.sort_by_key(|c| c.iter().any(|a| a[0] == 1 || a[0] == 3)); // slime and cluster scans are the expensive ones: last
     let mut p = vec![0];
     for c in cl {
         if p.len() + 1 + c.len() * ATOM > PROG_INTS {

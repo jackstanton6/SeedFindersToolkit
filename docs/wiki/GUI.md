@@ -6,8 +6,9 @@ the first time the window opens.
 
 ## Toolbar
 
-`version` (prepared data folders) · `mode` ([Search modes](Search-Modes.md)) · `start` · `count`
-(`10M`, `2^48`, ...) · `threads` · `max` (stop after N matches, default 10,000, 0 = unlimited) ·
+`version` (prepared data folders) · `mode` ([Search modes](Search-Modes.md)) · `range` (preset for
+from/to) · `from` · `to` (inclusive; `10M`, `2^48`, ...) · `fixed` (the kept part of the seed in the
+lower-48 / upper-16 modes) · **shuffle** (random order, no repeats) · `threads` · `max` (stop after N matches, default 10,000, 0 = unlimited) ·
 **GPU** with its status: *CUDA compatible* (tick it to pre-filter on the graphics card) or *no
 CUDA* (hover for the reason; see [Search modes](Search-Modes.md#gpu-cuda)) ·
 **Estimate** (runs the search for 3 seconds and projects the total time and how rare matches are;

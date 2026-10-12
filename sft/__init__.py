@@ -43,7 +43,8 @@ def world(version: str = "26.3"):
 class Job:
     """One search: the engine part runs in Rust threads; py(...) terms filter its matches here."""
 
-    def __init__(self, version: str, query_text, mode="range", start=0, count=1_000_000, seeds=None, max_results=0, loaded=None, gpu=False):
+    def __init__(self, version: str, query_text, mode="range", start=0, count=1_000_000, seeds=None, max_results=0, loaded=None, gpu=False,
+                 shuffle=None):
         tree = query.parse(query_text) if isinstance(query_text, str) else query_text
         engine_tree, self.py_terms = query.split_python(tree)
         self.world = world(version)
@@ -54,7 +55,7 @@ class Job:
         used = {n.get("plugin") for n in query.nodes(engine_tree) if n["op"] == "native"}
         self.search = engine().Search(
             self.world, json.dumps(engine_tree or {"op": "and", "args": []}), mode, start, count,
-            seeds, [n for n in plugins.natives(plugin_list) if n[0] in used], max_results, gpu,
+            seeds, [n for n in plugins.natives(plugin_list) if n[0] in used], max_results, gpu, shuffle,
         )
         self.gpu_note = self.search.gpu_note
         self.rows: list[tuple[int, list]] = []

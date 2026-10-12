@@ -915,18 +915,28 @@ fn interp_block_step(input: &S, cxz: i32, cy: i32, ixz: f32, iy: f32, ctx: &mut 
 // Compiler (DensityFunctionCompiler + RandomState's CompileContext)
 // ------------------------------------------------------------------------------------------------
 
+/// Rewritten cache inputs by cache id, with their range and axes. Seed-independent, so a World
+/// rewrites once (`Compiler::rewrite`) and every seed compiles from the same table.
+pub type Caches = Arc<Vec<(Iv, u8, Df)>>;
+
 pub struct Compiler<'a> {
     pub defs: &'a HashMap<String, Df>,
     pub noise_params: &'a HashMap<String, NormalNoise>,
     pub random: Positional,
     noises: HashMap<String, Arc<NoiseStack>>,
     prepared: HashMap<String, usize>,
-    caches: Vec<(Iv, u8, Option<Arc<S>>)>,
+    pub caches: Caches,
+    compiled: Vec<Option<Arc<S>>>,
 }
 
 impl<'a> Compiler<'a> {
     pub fn new(defs: &'a HashMap<String, Df>, noise_params: &'a HashMap<String, NormalNoise>, random: Positional) -> Self {
-        Self { defs, noise_params, random, noises: HashMap::new(), prepared: HashMap::new(), caches: vec![] }
+        Self::with_caches(defs, noise_params, random, Arc::new(vec![]))
+    }
+
+    /// A compiler for already rewritten functions (see `Caches`).
+    pub fn with_caches(defs: &'a HashMap<String, Df>, noise_params: &'a HashMap<String, NormalNoise>, random: Positional, caches: Caches) -> Self {
+        Self { defs, noise_params, random, noises: HashMap::new(), prepared: HashMap::new(), caches, compiled: vec![] }
     }
 
     /// RandomState.getOrCreateNoise: the noise's random is fromHashOf(its id).
@@ -942,9 +952,19 @@ impl<'a> Compiler<'a> {
 
     /// DensityFunctionCompiler.getSampler
     pub fn compile_root(&mut self, df: &Df) -> Arc<S> {
+        let f = self.rewrite(df);
+        self.compile_rewritten(&f)
+    }
+
+    /// The seed-independent half of `compile_root`: inline refs, dedupe caches, slice axes.
+    pub fn rewrite(&mut self, df: &Df) -> Df {
         let f = self.inline(df);
-        let f = self.slice(&f, 7);
-        Arc::new(self.compile(&f))
+        self.slice(&f, 7)
+    }
+
+    /// The per-seed half of `compile_root`, for a function from `rewrite`.
+    pub fn compile_rewritten(&mut self, f: &Df) -> Arc<S> {
+        Arc::new(self.compile(f))
     }
 
     pub fn compile_ref(&mut self, name: &str) -> Arc<S> {
@@ -968,12 +988,11 @@ impl<'a> Compiler<'a> {
             return id;
         }
         let id = self.caches.len();
-        self.caches.push((NAI, 0, None));
+        Arc::make_mut(&mut self.caches).push((NAI, 0, Df::Const(0.0)));
         let f = self.inline(input);
         let f = self.slice(&f, 7);
         let (range, axes) = (self.range(&f), self.axes(&f));
-        let s = Arc::new(S::Cache(id, Arc::new(self.compile(&f))));
-        self.caches[id] = (range, axes, Some(s));
+        Arc::make_mut(&mut self.caches)[id] = (range, axes, f);
         self.prepared.insert(key.to_string(), id);
         id
     }
@@ -1246,7 +1265,16 @@ impl<'a> Compiler<'a> {
                 let choice = S::Clamp(bx(S::ConstAdd(bx(S::Noise(main, xzm / xz_factor, ym / y_factor)), 0.5)), 0.0, 1.0);
                 S::Lerp(bx(choice), bx(S::Noise(lo, xzm, ym)), bx(S::Noise(hi, xzm, ym)))
             }
-            Df::Prepared(id) => S::Shared(self.caches[*id].2.clone().expect("cache used while being prepared")),
+            Df::Prepared(id) => {
+                // compiled on first use, then shared by every function that reads the cache
+                self.compiled.resize(self.caches.len(), None);
+                if self.compiled[*id].is_none() {
+                    let caches = self.caches.clone();
+                    let s = Arc::new(S::Cache(*id, Arc::new(self.compile(&caches[*id].2))));
+                    self.compiled[*id] = Some(s);
+                }
+                S::Shared(self.compiled[*id].clone().unwrap())
+            }
         }
     }
 

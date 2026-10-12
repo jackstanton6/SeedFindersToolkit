@@ -600,6 +600,22 @@ impl Structures {
         Some([spacing, separation, triangular as i32, s.salt, reduction, s.frequency.to_bits() as i32, s.locate_offset.0, s.locate_offset.2])
     }
 
+    /// How far a start's position and box corners can sit from its locate position (blocks).
+    /// Swamp huts and single-piece temples start at chunk + 8 with a box inside chunk + 0..size;
+    /// other kinds get the general 128.
+    pub fn reach(&self, set: usize) -> i32 {
+        let s = &self.sets[set];
+        let (ox, oz) = (s.locate_offset.0, s.locate_offset.2);
+        let size = |st: usize| match self.structures[st].kind {
+            Kind::SinglePiece(w, _, d) => Some(w.max(d) - 1),
+            Kind::OnTop(_, Piece::SwampHut) => Some(8),
+            _ => None,
+        };
+        // farthest of offsets 0..=m (box corners and the start at 8) from the locate offset
+        let far = |m: i32, o: i32| o.abs().max((m.max(8) - o).abs()) as f64;
+        s.entries.iter().map(|&(st, _)| size(st).map_or(128, |m| far(m, ox).hypot(far(m, oz)).ceil() as i32)).max().unwrap_or(128)
+    }
+
     pub fn is_structure_chunk(&self, set: usize, seed: i64, cx: i32, cz: i32) -> bool {
         let s = &self.sets[set];
         let Placement::Spread { spacing, .. } = s.placement else { return false };

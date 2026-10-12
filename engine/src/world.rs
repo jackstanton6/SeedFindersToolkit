@@ -2,7 +2,7 @@
 //! climate/biomes on both evaluation paths, and getBaseHeight/getBaseColumn with the aquifer.
 
 use crate::biome::{quantize, Biomes, Climate};
-use crate::density::{parse, Compiler, Ctx, Df, Volume, S};
+use crate::density::{parse, Caches, Compiler, Ctx, Df, Volume, S};
 use crate::noise::NormalNoise;
 use crate::rng::{JavaRandom, Positional, Xoroshiro};
 use serde_json::Value;
@@ -53,6 +53,9 @@ pub struct World {
     pub structures: crate::structure::Structures,
     /// Chest loot tables; Err (with the reason) when the data folder predates loot extraction.
     pub loot: Result<crate::loot::Loot, String>,
+    /// Rewritten router functions (climate, final density, aquifer, in that order) and their
+    /// caches: the seed-independent part of compiling, done once.
+    rewritten: std::sync::OnceLock<(Vec<Df>, Caches)>,
 }
 
 impl World {
@@ -112,6 +115,16 @@ impl World {
             biomes,
             climate,
             structures,
+            rewritten: std::sync::OnceLock::new(),
+        })
+    }
+
+    fn rewritten(&self) -> &(Vec<Df>, Caches) {
+        self.rewritten.get_or_init(|| {
+            // same order as compiling them one by one, so cache ids match
+            let mut c = Compiler::new(&self.defs, &self.noises, Positional::Legacy { seed: 0 });
+            let roots = self.climate_dfs.iter().chain([&self.final_density]).chain(self.aquifer_dfs.iter().flatten()).map(|df| c.rewrite(df)).collect();
+            (roots, c.caches)
         })
     }
 }
@@ -171,8 +184,9 @@ pub struct Seeded<'w> {
 impl<'w> Seeded<'w> {
     pub fn new(w: &'w World, seed: i64) -> Self {
         let random = if w.legacy_random { JavaRandom::new(seed).fork_positional() } else { Xoroshiro::new(seed).fork_positional() };
-        let mut comp = Compiler::new(&w.defs, &w.noises, random);
-        let climate = w.climate_dfs.iter().map(|df| comp.compile_root(df)).collect();
+        let (roots, caches) = w.rewritten();
+        let mut comp = Compiler::with_caches(&w.defs, &w.noises, random, caches.clone());
+        let climate = roots[..w.climate_dfs.len()].iter().map(|df| comp.compile_rewritten(df)).collect();
         Seeded { w, seed, comp, climate, terrain: None }
     }
 
@@ -214,8 +228,10 @@ impl<'w> Seeded<'w> {
     /// work through `&self`, so one Seeded can be shared by worker threads.
     pub fn prepare_terrain(&mut self) {
         if self.terrain.is_none() {
-            let final_density = self.comp.compile_root(&self.w.final_density.clone());
-            let aquifer = self.w.aquifer_dfs.as_ref().map(|dfs| dfs.iter().map(|d| self.comp.compile_root(d)).collect());
+            let (roots, _) = self.w.rewritten();
+            let k = self.w.climate_dfs.len();
+            let final_density = self.comp.compile_rewritten(&roots[k]);
+            let aquifer = self.w.aquifer_dfs.as_ref().map(|_| roots[k + 1..].iter().map(|d| self.comp.compile_rewritten(d)).collect());
             let aquifer_random = self.comp.random.from_hash("minecraft:aquifer").fork_positional();
             self.terrain = Some(Terrain { final_density, aquifer, aquifer_random });
         }

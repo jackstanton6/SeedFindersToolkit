@@ -5,6 +5,7 @@
 use rayon::prelude::*;
 use serde_json::{json, Value};
 use sft_engine::query::{parse, Eval};
+use sft_engine::search::permute;
 use sft_engine::world::World;
 use sft_engine::{crack, gpu};
 use std::path::Path;
@@ -37,20 +38,25 @@ fn gpu_prefilter_matches_cpu() {
         (json!({"op": "slime", "radius": 64, "min": 7}), true),
         (json!({"op": "slime", "radius": 24, "within": 100, "min": 3}), true),
         (json!({"op": "or", "args": [s("desert_pyramid", 200), s("jungle_pyramid", 200)]}), true),
+        // cluster: the GPU checks pair distances only, so it keeps a superset
+        (json!({"op": "cluster", "names": "swamp_hut", "count": 3, "dist": 128, "within": 3000, "afk": true}), false),
+        (json!({"op": "cluster", "names": "swamp_hut", "count": 2, "dist": 100, "within": 1500}), false),
+        (json!({"op": "cluster", "names": "village", "count": 3, "dist": 200, "within": 2000}), false),
     ];
     let n = 1u64 << 20;
-    for (mode, base, rng) in [(1, 0x1234_5678_9ABCu64, 0u64), (0, (-(1i64 << 40)) as u64, 0), (2, 0, 42)] {
+    let shuffled = Some((3_000_000_007u64, 0xDEAD_BEEF_1234));
+    for (mode, base, shuffle) in [(1, 0x1234_5678_9ABCu64, None), (0, (-(1i64 << 40)) as u64, None), (2, 42, None), (0, 1 << 40, shuffled), (1, 0, shuffled)] {
         for (q, exact) in &cases {
             let cond = parse(&w, &[], q).unwrap();
             let prog = gpu::program(&w, &cond);
             assert!(!prog.is_empty(), "{q}");
             let seed_of = |i: u64| -> i64 {
-                let u = base.wrapping_add(i);
+                let u = shuffle.map_or(i, |(t, k)| permute(i, t, k)).wrapping_add(base);
                 match mode {
                     1 => (u & ((1 << 48) - 1)) as i64,
                     2 => {
                         // search.rs splitmix
-                        let mut z = rng.wrapping_add(u).wrapping_add(0x9E37_79B9_7F4A_7C15);
+                        let mut z = u.wrapping_add(0x9E37_79B9_7F4A_7C15);
                         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
                         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
                         (z ^ (z >> 31)) as i64
@@ -59,9 +65,9 @@ fn gpu_prefilter_matches_cpu() {
                 }
             };
             let cpu: Vec<u32> = (0..n).into_par_iter().filter(|&i| Eval::new(&w, seed_of(i), &[]).pre(&cond)).map(|i| i as u32).collect();
-            let got = g.filter(&prog, mode, if mode == 2 { 0 } else { base }, n, rng).unwrap();
+            let got = g.filter(&prog, mode, base, 0, n, shuffle).unwrap();
             let missing = cpu.iter().filter(|i| got.binary_search(i).is_err()).count();
-            eprintln!("mode {mode} {q}: cpu {} gpu {}", cpu.len(), got.len());
+            eprintln!("mode {mode} shuffle {} {q}: cpu {} gpu {}", shuffle.is_some(), cpu.len(), got.len());
             assert_eq!(missing, 0, "GPU dropped seeds the CPU keeps: {q}");
             if *exact {
                 assert_eq!(cpu, got, "{q}");
@@ -104,7 +110,7 @@ fn gpu_speed() {
     let prog = gpu::program(&w, &cond);
     for n in [1u64 << 20, 1 << 24] {
         let t = std::time::Instant::now();
-        let k = g.filter(&prog, 0, 0, n, 0).unwrap().len();
+        let k = g.filter(&prog, 0, 0, 0, n, None).unwrap().len();
         eprintln!("GPU {n}: {k} pass, {:.0}/s", n as f64 / t.elapsed().as_secs_f64());
     }
     let t = std::time::Instant::now();

@@ -2,14 +2,23 @@
 
 | Mode | A unit is | Use it for |
 |---|---|---|
-| range (64-bit) | one world seed, `start .. start+count` | general searches, small queries, reproducible ranges |
+| range (64-bit) | one world seed, `from .. to` | general searches, small queries, reproducible ranges |
+| lower 48 bits (fixed upper 16) | one world seed whose upper 16 bits are `fixed` (0 – 65535) and whose lower 48 bits run `from .. to` | structure layouts within one "upper bits" family |
+| upper 16 bits (sisters of a seed) | one sister of the seed in `fixed`: its lower 48 bits kept, upper 16 bits `from .. to` (0 – 65535) | biome or terrain variants of a structure layout you like (same structures, different biomes) |
 | structure seeds (48-bit) + sisters | one 48-bit structure seed; on a pre-check pass, all 65,536 sister seeds are fully checked | rare structure layouts: quad huts, monument clusters, close villages |
-| random | one pseudo-random 64-bit seed (generator seed = `start`) | sampling the whole seed space evenly |
 | seed list file | one seed from a file (one integer per line) | re-checking seeds from crackers, other tools or earlier runs |
-| plugin: … | one seed produced by a plugin seed source | e.g. text seeds (`example_python.text_seeds`) |
-| sisters | the 65,536 seeds sharing one seed's low 48 bits (same structures, different biomes) | biome or terrain variants of a structure layout you like |
+| plugin: … | one seed produced by a plugin seed source (`to - from + 1` of them) | e.g. text seeds (`example_python.text_seeds`) |
 
-`count` accepts `10k`, `2.5M`, `1G`, `2^48`.
+**range** fills `from`/`to` (both inclusive): *first 10M*, *full range* (all 64-bit seeds, all
+48-bit values or 0 – 65535, depending on the mode), *32-bit (text seeds)* (every seed a text seed
+can hash to), or *custom* once you edit them. They accept `10k`, `2.5M`, `1G`, `2^48`.
+
+**shuffle** visits the units in a random order instead of counting up: every seed exactly once, so
+Stop and Resume still work, and a stopped shuffled search has sampled the range evenly. *full range*
+\+ shuffle replaces the old *random* mode in the window (the CLI keeps `--mode random`; `search
+--shuffle KEY` shuffles any CLI search, the same KEY giving the same order). The GPU pre-filter
+shuffles the same way. All sisters share their structure placement, so the GPU adds nothing in
+*upper 16 bits* mode and it runs on the CPU.
 
 ## Stats explained
 
@@ -33,8 +42,8 @@
 
 If a query is driven by structure placement (min counts, `near`, small radii), the 48-bit
 pre-check rejects almost every structure seed. Structure-seed mode then does about one placement
-check per 65,536 world seeds instead of one per seed. Use range or random mode for biome or
-terrain-driven queries, where every seed needs the full check anyway.
+check per 65,536 world seeds instead of one per seed. Use range mode (shuffled for an even sample)
+for biome or terrain-driven queries, where every seed needs the full check anyway.
 
 ## Stopping, resuming, max results
 
@@ -102,21 +111,26 @@ With an NVIDIA GPU (compute capability 7.5 or newer, any recent driver) the tool
 compatible**; tick **GPU** (CLI: `--gpu`). The GPU then runs the part of the query that depends on
 the seed alone, in batches of up to 16M seeds:
 
-- structure placement counts (`structure`, `loot`, `portal_*`, and `near`/`cluster` as necessary
-  conditions), including every frequency-reduction method of the vanilla sets;
+- structure placement counts (`structure`, `loot`, `portal_*`, and `near` as a necessary
+  condition), including every frequency-reduction method of the vanilla sets;
+- `cluster` of one structure: some start with `count - 1` others close enough (for quad witch huts
+  this keeps about 1 structure seed in 900);
 - slime chunks.
 
 Every seed the GPU passes still gets the exact CPU pre-check (exclusion zones such as outposts near
-villages) and the full check, so results are identical with and without it
-(`cargo test --release --test gpu -- --ignored` checks that the kernel keeps exactly the seeds the
-CPU keeps). Seed cracking brute-forces on the GPU too (`crack --gpu`, Tools menu with GPU ticked),
+villages, the exact cluster geometry) and the full check, so results are identical with and without
+it (`cargo test --release --test gpu -- --ignored` checks that the kernel keeps every seed the CPU
+keeps). The GPU filters the next batch while the CPU checks the current one, and in structure-seed
+mode the sisters of each surviving structure seed are shared among all threads. Seed cracking brute-forces on the GPU too (`crack --gpu`, Tools menu with GPU ticked),
 with a work limit of 2^44 seeds instead of 2^38.
 
 What to expect (RTX 5070 Ti vs 24 CPU threads): the seed-only check runs at about 3.4 billion seeds/s
 against 190 million/s on the CPU. The whole search speeds up by the same factor only when nearly all
 seeds fail that check: `slime(radius=64) >= 12` goes from 59M to 496M seeds/s. When many seeds
 survive to biome and terrain checks, those dominate and the GPU changes little, and in structure-seed
-mode the 65,536 sister checks per surviving structure seed stay on the CPU.
+mode the 65,536 sister checks per surviving structure seed stay on the CPU. Quad witch huts
+(structure seeds): 760 structure seeds/s on the CPU, 890/s with the GPU. Low GPU utilisation in
+such searches is expected: the GPU finishes its batch quickly and waits for the CPU.
 
 Building with GPU support needs the CUDA toolkit's `nvcc` when the engine is compiled (`pip install
 -e .` picks it up from `CUDA_PATH` or `PATH`); running needs only the NVIDIA driver. Without either,

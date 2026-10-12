@@ -225,3 +225,43 @@ Progress:
 - [x] Block query builder (nested blocks, sentence-style fields, palette, drag and drop, undo) +
   "I want..." wizard (10 goals); text box and a plain-English summary stay in sync.
 - [x] Help viewer (wiki pages in the app, F1, per-block help) and an optional first-start tour.
+
+## Performance batch (requested 2026-10-12)
+
+Scope: faster searches and real GPU use without losing accuracy. Every change keeps the matched seed
+set identical (oracle parity at zero mismatches, CPU vs GPU result sets equal, resume equal).
+
+Progress:
+- [x] Clusters: `max_cover` buckets points (same candidates and members as all pairs, early stop
+  in the pre-check); per-structure slack (`Structures::reach`: 12 blocks for swamp huts, size-based
+  for temples, 128 otherwise) instead of 128 for every start; the full check only generates starts
+  that have `count - 1` placement chunks close enough, and sister seeds reuse those chunks
+  (thread-local, keyed by the low 48 bits). Quad witch huts pre-check 97 ms -> 4 ms, pass rate
+  1.0 -> 1e-3, sister check 144 ms -> 0.4 ms.
+- [x] GPU cluster atom (pair distances, and for count <= 4 a pairwise check of the neighbours):
+  a superset of the CPU pre-check; 2.3M structure seeds/s on the quad hut preset.
+- [x] GPU filters the next batch while the CPU checks this one; in structure-seed mode each
+  survivor's 65536 sisters are split into 16 parts so every thread works on it.
+- [x] `and` children ordered at search start by measured cost / (1 - pass rate); only speed and the
+  order of match details change.
+- [x] The density-function rewrite (inline, cache dedupe, slicing) runs once per World; a seed only
+  compiles samplers and noises. `Seeded::new` 0.18 -> 0.04 ms, with terrain 0.59 -> 0.19 ms.
+- Skipped: lazy noise creation (all noises together cost 0.1 ms per seed).
+
+Measured (RTX 5070 Ti, 24 threads): quad witch huts (structure seeds) ~0 -> 760/s CPU, 890/s with
+the GPU; village + monument (range) 16.2k -> 21.2k seeds/s.
+
+## Next: biome checks on the GPU (milestone)
+
+The GPU only rejects what the 48-bit pre-check rejects; every survivor still needs biomes (and often
+heights) on the CPU, so the GPU idles whenever the CPU check is the limit (most real queries). Porting
+the climate path makes the GPU do the heavy lifting:
+- float Perlin / NormalNoise / the climate density functions (point path first) in CUDA, literal
+  ports with `--fmad=false`; per-seed noise setup (Xoroshiro, MD5-derived seeds) on the device;
+- the climate parameter search (R-tree or a flattened list) for biome ids;
+- lowering: structure start biome checks (`column_ok`, start biome) and `biome(...)` metrics become
+  GPU atoms; the CPU still checks every survivor exactly.
+- Definition of done: a GPU parity test against `Seeded::biome` on random seeds and positions (zero
+  mismatches), superset parity for the lowered queries, and measured speedups.
+Heights and terrain (final density, aquifer) stay on the CPU unless the biome port shows they are
+worth it.

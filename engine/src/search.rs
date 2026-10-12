@@ -123,6 +123,40 @@ fn splitmix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Unit `i` of `n` in shuffled order: a bijection on [0, n) keyed by `key`. Odd multiplies and
+/// xor-shifts within the next power of two, cycle-walking past n (fewer than 2 rounds on average).
+/// gpu.cu `permute` is a literal port.
+pub fn permute(i: u64, n: u64, key: u64) -> u64 {
+    if n <= 1 {
+        return i;
+    }
+    let k = 64 - (n - 1).leading_zeros();
+    let mask = if k == 64 { u64::MAX } else { (1 << k) - 1 };
+    let s = k.div_ceil(2);
+    let mut x = i;
+    loop {
+        x = (x ^ key) & mask;
+        x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9) & mask;
+        x ^= x >> s;
+        x = (x ^ (key >> 32)) & mask;
+        x = x.wrapping_mul(0x94D0_49BB_1331_11EB) & mask;
+        x ^= x >> s;
+        if x < n {
+            return x;
+        }
+    }
+}
+
+/// Some `and` with two or more children (worth ordering).
+fn has_and(c: &Cond) -> bool {
+    match c {
+        Cond::And(v) if v.len() > 1 => true,
+        Cond::And(v) | Cond::Or(v) => v.iter().any(has_and),
+        Cond::Not(c) => has_and(c),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Match {
     pub seed: i64,
@@ -169,6 +203,8 @@ pub struct Search {
     pub error: Mutex<Option<String>>,
     /// GPU pre-filter: device and program (see `use_gpu`).
     gpu: Option<(Arc<gpu::Gpu>, Vec<i32>)>,
+    /// Visit the units in shuffled order with this key (`permute`); resume points stay valid.
+    pub shuffle: Option<u64>,
 }
 
 impl Search {
@@ -177,13 +213,80 @@ impl Search {
         let libs = natives.iter().map(|(_, p)| Native::load(p)).collect::<Result<_, _>>()?;
         let names: Vec<String> = natives.iter().map(|(n, _)| n.clone()).collect();
         let cond = parse(&world, &names, query)?;
-        Ok(Search::with(world, cond, mode, libs))
+        let mut s = Search::with(world, cond, mode, libs);
+        if has_and(&s.cond) {
+            let seeds = s.sample(32);
+            let mut c = std::mem::replace(&mut s.cond, Cond::And(vec![]));
+            s.order_ands(&mut c, &seeds);
+            s.cond = c;
+        }
+        Ok(s)
+    }
+
+    /// Up to `n` seeds of this search that pass the pre-check (0.3 s at most).
+    fn sample(&self, n: usize) -> Vec<i64> {
+        let t = Instant::now();
+        let mut out = vec![];
+        for i in 0..self.mode.units() {
+            if out.len() >= n || t.elapsed().as_secs_f64() > 0.3 {
+                break;
+            }
+            // structure seeds: varied upper bits, so biomes differ
+            let seed = self.seed(i) | ((out.len() as i64 * 7919) << 48);
+            if Eval::new(&self.world, seed, &self.natives).pre(&self.cond) {
+                out.push(seed);
+            }
+        }
+        out
+    }
+
+    /// Puts the children of every `and` cheapest-to-reject first (cost / (1 - pass rate), measured
+    /// on `seeds`, 0.2 s per child at most). The same seeds match; only speed and the order of
+    /// match details change. `and`s with objectives keep their order (score sums stay identical).
+    fn order_ands(&self, c: &mut Cond, seeds: &[i64]) {
+        match c {
+            Cond::And(v) | Cond::Or(v) => v.iter_mut().for_each(|c| self.order_ands(c, seeds)),
+            Cond::Not(c) => self.order_ands(c, seeds),
+            _ => {}
+        }
+        let Cond::And(v) = c else { return };
+        if seeds.len() < 4 || v.len() < 2 || v.iter().any(Cond::has_objective) {
+            return;
+        }
+        let mut keyed: Vec<(f64, Cond)> = v
+            .drain(..)
+            .map(|c| {
+                let t = Instant::now();
+                let (mut n, mut pass) = (0, 0);
+                for &s in seeds {
+                    n += 1;
+                    pass += Eval::new(&self.world, s, &self.natives).eval(&c) as usize;
+                    if t.elapsed().as_secs_f64() > 0.2 {
+                        break;
+                    }
+                }
+                let (cost, p) = (t.elapsed().as_secs_f64() / n as f64, pass as f64 / n as f64);
+                (if p >= 1.0 { f64::INFINITY } else { cost / (1.0 - p) }, c)
+            })
+            .collect();
+        keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+        *v = keyed.into_iter().map(|k| k.1).collect();
+    }
+
+    /// The 64-bit seed of unit `i` (structure seeds: its low 48 bits).
+    fn seed(&self, i: u64) -> i64 {
+        match &self.mode {
+            Mode::Range { start, .. } => start.wrapping_add(i as i64),
+            Mode::List(v) => v[i as usize],
+            Mode::Random { rng_seed, .. } => splitmix(rng_seed.wrapping_add(i)) as i64,
+            Mode::StructureSeeds { start, .. } => ((start + i) & ((1 << 48) - 1)) as i64,
+        }
     }
 
     fn with(world: Arc<World>, cond: Cond, mode: Mode, natives: Vec<Native>) -> Search {
         let ranked = cond.has_objective();
         let max_results = if ranked { 100 } else { u64::MAX };
-        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]), error: Mutex::new(None), gpu: None }
+        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]), error: Mutex::new(None), gpu: None, shuffle: None }
     }
 
     fn full(&self, seed: i64, local: &mut Local) {
@@ -218,21 +321,25 @@ impl Search {
         }
     }
 
-    /// Processes unit `i`; false if interrupted part-way (the unit must be redone on resume).
-    fn unit(&self, i: u64, local: &mut Local) -> bool {
+    /// Processes part `k` of `of` of unit `i` (structure seeds split their sisters into parts);
+    /// false if interrupted part-way (the unit must be redone on resume).
+    fn unit(&self, i: u64, (k, of): (u64, u64), local: &mut Local) -> bool {
+        let i = self.shuffle.map_or(i, |k| permute(i, self.mode.units(), k));
         match &self.mode {
-            Mode::Range { start, .. } => self.seed_unit(start.wrapping_add(i as i64), local),
-            Mode::List(v) => self.seed_unit(v[i as usize], local),
-            Mode::Random { rng_seed, .. } => self.seed_unit(splitmix(rng_seed.wrapping_add(i)) as i64, local),
-            Mode::StructureSeeds { start, .. } => {
-                let low = ((start + i) & ((1 << 48) - 1)) as i64;
-                local.checks += 1;
+            Mode::StructureSeeds { .. } => {
+                let low = self.seed(i);
+                if k == 0 {
+                    local.checks += 1;
+                }
                 if Eval::new(&self.world, low, &self.natives).pre(&self.cond) {
-                    local.passed += 1;
+                    if k == 0 {
+                        local.passed += 1;
+                    }
+                    let span = 65536 / of as i64;
                     // flushed per sister so slow queries still show progress
-                    for upper in 0..65536i64 {
+                    for upper in k as i64 * span..(k as i64 + 1) * span {
                         if self.stop.load(Relaxed) {
-                            self.stats.partial.fetch_sub(upper as u64, Relaxed);
+                            self.stats.partial.fetch_sub((upper - k as i64 * span) as u64, Relaxed);
                             return false;
                         }
                         local.checks += 1;
@@ -240,9 +347,10 @@ impl Search {
                         self.flush(local);
                         self.stats.partial.fetch_add(1, Relaxed);
                     }
-                    self.stats.partial.fetch_sub(65536, Relaxed);
+                    self.stats.partial.fetch_sub(span as u64, Relaxed);
                 }
             }
+            _ => self.seed_unit(self.seed(i), local),
         }
         true
     }
@@ -260,54 +368,68 @@ impl Search {
     pub fn run(&self, from: u64, to: u64, threads: usize) -> u64 {
         match &self.gpu {
             Some((g, prog)) => self.run_gpu(g, prog, from, to, threads),
-            None => from + self.run_cpu(to - from, &|p| from + p, &|_| 0, threads),
+            None => from + self.run_cpu(to - from, 1, &|p| from + p, &|_| 0, threads),
         }
     }
 
-    /// Batches of units go through the GPU program; the CPU then checks the survivors as usual.
+    /// Batches of units go through the GPU program; the CPU then checks the survivors as usual. The
+    /// GPU filters the next batch while the CPU works on this one.
     fn run_gpu(&self, g: &gpu::Gpu, prog: &[i32], from: u64, to: u64, threads: usize) -> u64 {
-        let (mode, base, rng) = match self.mode {
-            Mode::Range { start, .. } => (0, start as u64, 0),
-            Mode::StructureSeeds { start, .. } => (1, start, 0),
-            Mode::Random { rng_seed, .. } => (2, 0, rng_seed),
+        let (mode, base) = match self.mode {
+            Mode::Range { start, .. } => (0, start as u64),
+            Mode::StructureSeeds { start, .. } => (1, start),
+            Mode::Random { rng_seed, .. } => (2, rng_seed),
             Mode::List(_) => unreachable!("use_gpu rejects lists"),
         };
-        // ponytail: GPU and CPU take turns per batch; overlap them if the GPU side ever dominates
-        let (mut lo, mut batch) = (from, 1u64 << 16);
-        while lo < to && !self.stop.load(Relaxed) {
-            let hi = (lo + batch).min(to);
-            let t = Instant::now();
-            let surv = match g.filter(prog, mode, base.wrapping_add(lo), hi - lo, rng) {
-                Ok(v) => v,
-                Err(e) => {
-                    self.error.lock().unwrap().get_or_insert(format!("GPU error: {e}"));
-                    self.stop.store(true, Relaxed);
-                    return lo;
+        let shuffle = self.shuffle.map(|k| (self.mode.units(), k));
+        // the few survivors of a structure-seed batch share their 65536 sisters among all threads
+        let parts = if mode == 1 { 16 } else { 1 };
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, u64, Vec<u32>)>(1);
+        std::thread::scope(|sc| {
+            sc.spawn(move || {
+                let (mut lo, mut batch) = (from, 1u64 << 16);
+                while lo < to && !self.stop.load(Relaxed) {
+                    let hi = (lo + batch).min(to);
+                    let t = Instant::now();
+                    match g.filter(prog, mode, base, lo, hi - lo, shuffle) {
+                        // a closed channel means the CPU side stopped
+                        Ok(surv) => if tx.send((lo, hi, surv)).is_err() { return },
+                        Err(e) => {
+                            self.error.lock().unwrap().get_or_insert(format!("GPU error: {e}"));
+                            self.stop.store(true, Relaxed);
+                            return;
+                        }
+                    }
+                    batch = gpu::next_batch(batch, t, 1 << 24);
+                    lo = hi;
                 }
-            };
-            batch = gpu::next_batch(batch, t, 1 << 24);
-            self.stats.gpu_units.fetch_add(hi - lo, Relaxed);
-            self.stats.gpu_passed.fetch_add(surv.len() as u64, Relaxed);
-            // the GPU-rejected units before a survivor count as done when the CPU finishes it
-            let gap = |p: u64| surv[p as usize] as u64 - if p == 0 { 0 } else { surv[p as usize - 1] as u64 + 1 };
-            let p = self.run_cpu(surv.len() as u64, &|p| lo + surv[p as usize] as u64, &gap, threads);
-            if p < surv.len() as u64 {
-                return lo + surv[p as usize] as u64;
+            });
+            let mut done = from;
+            for (lo, hi, surv) in rx {
+                self.stats.gpu_units.fetch_add(hi - lo, Relaxed);
+                self.stats.gpu_passed.fetch_add(surv.len() as u64, Relaxed);
+                // the GPU-rejected units before a survivor count as done when the CPU finishes it
+                let gap = |p: u64| surv[p as usize] as u64 - if p == 0 { 0 } else { surv[p as usize - 1] as u64 + 1 };
+                let p = self.run_cpu(surv.len() as u64, parts, &|p| lo + surv[p as usize] as u64, &gap, threads);
+                if p < surv.len() as u64 {
+                    return lo + surv[p as usize] as u64;
+                }
+                let tail = hi - lo - surv.last().map_or(0, |&l| l as u64 + 1);
+                self.stats.units_done.fetch_add(tail, Relaxed);
+                self.stats.checks.fetch_add(tail, Relaxed);
+                done = hi;
             }
-            let tail = hi - lo - surv.last().map_or(0, |&l| l as u64 + 1);
-            self.stats.units_done.fetch_add(tail, Relaxed);
-            self.stats.checks.fetch_add(tail, Relaxed);
-            lo = hi;
-        }
-        lo.min(to)
+            done
+        })
     }
 
-    /// Runs positions [0, n), position p being unit `unit_at(p)`, on workers pulling blocks in order;
-    /// a finished position also credits `skipped(p)` units the GPU already rejected. Returns the first
-    /// position not done (n when all are).
-    fn run_cpu(&self, n: u64, unit_at: &(dyn Fn(u64) -> u64 + Sync), skipped: &(dyn Fn(u64) -> u64 + Sync), threads: usize) -> u64 {
+    /// Runs positions [0, n), position p being unit `unit_at(p)` split into `parts`, on workers
+    /// pulling blocks in order; a finished position also credits `skipped(p)` units the GPU already
+    /// rejected. Returns the first position not done (n when all are).
+    fn run_cpu(&self, n: u64, parts: u64, unit_at: &(dyn Fn(u64) -> u64 + Sync), skipped: &(dyn Fn(u64) -> u64 + Sync), threads: usize) -> u64 {
         // small blocks when there is little work, so slow queries still use every thread
         let block = if matches!(self.mode, Mode::StructureSeeds { .. }) { 1 } else { (n / (threads.max(1) as u64 * 16)).clamp(1, 256) };
+        let left: Vec<AtomicU64> = if parts > 1 { (0..n).map(|_| AtomicU64::new(parts)).collect() } else { vec![] };
         let next = AtomicU64::new(0);
         let resume = AtomicU64::new(u64::MAX);
         std::thread::scope(|sc| {
@@ -316,12 +438,13 @@ impl Search {
                     let mut local = Local::default();
                     loop {
                         let lo = next.fetch_add(block, Relaxed);
-                        if lo >= n {
+                        if lo >= n * parts {
                             break;
                         }
-                        for p in lo..(lo + block).min(n) {
+                        for q in lo..(lo + block).min(n * parts) {
+                            let (p, part) = (q / parts, (q % parts, parts));
                             let i = unit_at(p);
-                            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.unit(i, &mut local))).unwrap_or_else(|e| {
+                            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.unit(i, part, &mut local))).unwrap_or_else(|e| {
                                 let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
                                 self.error.lock().unwrap().get_or_insert(format!("engine error at unit {i}: {msg}"));
                                 self.stop.store(true, Relaxed);
@@ -332,8 +455,11 @@ impl Search {
                                 self.flush(&mut local);
                                 return;
                             }
-                            local.units += 1 + skipped(p);
-                            local.checks += skipped(p);
+                            // a split unit is done when its last part is
+                            if parts == 1 || left[p as usize].fetch_sub(1, Relaxed) == 1 {
+                                local.units += 1 + skipped(p);
+                                local.checks += skipped(p);
+                            }
                             if local.full > 0 || local.units >= 1024 {
                                 self.flush(&mut local); // live progress for slow queries
                             }
@@ -343,7 +469,7 @@ impl Search {
                 });
             }
         });
-        resume.load(Relaxed).min(next.load(Relaxed)).min(n)
+        resume.load(Relaxed).min(next.load(Relaxed) / parts).min(n)
     }
 
     /// Turns on the GPU pre-filter; Err says why it cannot be used for this search.
@@ -429,5 +555,25 @@ impl Search {
         self.top.lock().unwrap().clear();
         *self.error.lock().unwrap() = None;
         self.stop.store(false, Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::permute;
+
+    #[test]
+    fn permute_is_a_bijection() {
+        for n in (1..300).chain([1 << 16, 1_000_003]) {
+            for key in [0, 7, u64::MAX] {
+                let mut seen = vec![false; n as usize];
+                for i in 0..n {
+                    let p = permute(i, n, key) as usize;
+                    assert!(!seen[p], "n {n} key {key}: {p} twice");
+                    seen[p] = true;
+                }
+            }
+        }
+        assert!(permute(5, u64::MAX, 1) < u64::MAX);
     }
 }

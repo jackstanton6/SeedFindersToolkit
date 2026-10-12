@@ -20,7 +20,7 @@ def cmd_search(a):
     seeds = [int(x) for x in open(a.seeds_file).read().split()] if a.seeds_file else None
     if a.sisters is not None:
         seeds = sft.sisters([a.sisters])
-    job = sft.Job(a.version, a.query, "list" if seeds else a.mode, a.start, a.count, seeds, a.max, gpu=a.gpu)
+    job = sft.Job(a.version, a.query, "list" if seeds else a.mode, a.start, a.count, seeds, a.max, gpu=a.gpu, shuffle=a.shuffle)
     run_job(job, a)
 
 
@@ -126,6 +126,7 @@ def main():
     s.add_argument("--count", type=int, default=1_000_000)
     s.add_argument("--seeds-file", help="search these seeds (one per line) instead")
     s.add_argument("--sisters", type=int, help="search the 65536 sister seeds of this seed instead")
+    s.add_argument("--shuffle", type=int, metavar="KEY", help="visit the seeds in a shuffled order (no repeats; same KEY, same order)")
 
     def run_args(s):
         s.add_argument("--threads", type=int, default=os.cpu_count())

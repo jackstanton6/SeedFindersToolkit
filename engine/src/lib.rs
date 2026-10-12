@@ -268,10 +268,11 @@ mod py {
         /// mode: "range" (start, count), "structure_seeds" (start, count), "list" (seeds),
         /// "random" (count, start = generator seed). natives: [(plugin name, library path)].
         /// gpu: pre-filter on the CUDA device when the query allows it (see `gpu_note`).
+        /// shuffle: visit the units in a shuffled order with this key (no repeats, resumable).
         #[new]
-        #[pyo3(signature = (world, query, mode, start=0, count=0, seeds=None, natives=vec![], max_results=0, gpu=false))]
+        #[pyo3(signature = (world, query, mode, start=0, count=0, seeds=None, natives=vec![], max_results=0, gpu=false, shuffle=None))]
         #[allow(clippy::too_many_arguments)]
-        fn new(world: &PyWorld, query: &str, mode: &str, start: i64, count: u64, seeds: Option<Vec<i64>>, natives: Vec<(String, String)>, max_results: u64, gpu: bool) -> PyResult<Self> {
+        fn new(world: &PyWorld, query: &str, mode: &str, start: i64, count: u64, seeds: Option<Vec<i64>>, natives: Vec<(String, String)>, max_results: u64, gpu: bool, shuffle: Option<u64>) -> PyResult<Self> {
             let q: Value = serde_json::from_str(query).map_err(|e| err(e.to_string()))?;
             let mode = match mode {
                 "range" => Mode::Range { start, count },
@@ -284,6 +285,7 @@ mod py {
             if max_results > 0 {
                 s.max_results = max_results;
             }
+            s.shuffle = shuffle;
             let gpu_note = if !gpu {
                 String::new()
             } else {

@@ -7,6 +7,7 @@
 //   0 COUNT  spacing separation triangular salt reduction freq_bits ox oz at_x at_z within min
 //   1 SLIME  radius at_x at_z within min
 //   2 CELL   spacing separation triangular salt gx gz cx cz
+//   3 CLUSTER as COUNT (min = need), then pair distance
 
 typedef long long i64;
 typedef unsigned long long u64;
@@ -142,6 +143,57 @@ __device__ bool slime_atom(i64 seed, const int *a) {
     return false;
 }
 
+#define NEAR_MAX 48
+
+// query::Eval::pre for cluster, weakened: some chunk within `r` of the point has need - 1 others
+// whose locate positions are within `d` of its own and (for need <= 4) of each other. Every circle
+// of radius d / 2 covering need chunks has such a chunk.
+__device__ bool cluster_atom(i64 seed, const int *a) {
+    int spacing = a[1], ox = a[7], oz = a[8], ax = a[9], az = a[10], r = a[11], need = a[12], d = a[13];
+    float f = __int_as_float(a[6]);
+    int gx0 = floordiv(floordiv(ax - r - ox, 16), spacing), gx1 = floordiv(floordiv(ax + r - ox, 16), spacing);
+    int gz0 = floordiv(floordiv(az - r - oz, 16), spacing), gz1 = floordiv(floordiv(az + r - oz, 16), spacing);
+    int k = d / (16 * spacing) + 1;  // neighbour cells that can hold a chunk within d
+    i64 r2 = (i64)r * r, d2 = (i64)d * d;
+    for (int gx = gx0; gx <= gx1; gx++) {
+        for (int gz = gz0; gz <= gz1; gz++) {
+            int cx, cz;
+            grid_chunk(seed, a, gx, gz, cx, cz);
+            i64 dx = (i64)(cx * 16 + ox - ax), dz = (i64)(cz * 16 + oz - az);
+            if (dx * dx + dz * dz > r2 || !frequency_ok(seed, a[5], f, a[4], cx, cz)) continue;
+            int m = 0, nx[NEAR_MAX], nz[NEAR_MAX];
+            for (int i = -k; i <= k; i++) {
+                for (int j = -k; j <= k; j++) {
+                    if (i == 0 && j == 0) continue;
+                    int ux, uz;
+                    grid_chunk(seed, a, gx + i, gz + j, ux, uz);
+                    i64 ex = (i64)(ux - cx) * 16, ez = (i64)(uz - cz) * 16;
+                    if (ex * ex + ez * ez <= d2 && frequency_ok(seed, a[5], f, a[4], ux, uz)) {
+                        if (m < NEAR_MAX) { nx[m] = ux; nz[m] = uz; }
+                        m++;
+                    }
+                }
+            }
+            if (m + 1 < need) continue;
+            if (need <= 2 || need > 4 || m > NEAR_MAX) return true;
+            // need - 1 of the neighbours within d of each other
+            for (int p = 0; p < m; p++) {
+                for (int q = p + 1; q < m; q++) {
+                    i64 ex = (i64)(nx[q] - nx[p]) * 16, ez = (i64)(nz[q] - nz[p]) * 16;
+                    if (ex * ex + ez * ez > d2) continue;
+                    if (need == 3) return true;
+                    for (int s = q + 1; s < m; s++) {
+                        i64 fx = (i64)(nx[s] - nx[p]) * 16, fz = (i64)(nz[s] - nz[p]) * 16;
+                        i64 gx2 = (i64)(nx[s] - nx[q]) * 16, gz2 = (i64)(nz[s] - nz[q]) * 16;
+                        if (fx * fx + fz * fz <= d2 && gx2 * gx2 + gz2 * gz2 <= d2) return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
 __device__ bool cell_atom(i64 seed, const int *a) {
     int cx, cz;
     grid_chunk(seed, a, a[5], a[6], cx, cz);
@@ -155,7 +207,7 @@ __device__ bool eval(i64 seed) {
         bool ok = false;
         for (int i = 0; i < na && !ok; i++) {
             const int *a = PROG + k + i * ATOM;
-            ok = a[0] == 0 ? count_atom(seed, a) : a[0] == 1 ? slime_atom(seed, a) : cell_atom(seed, a);
+            ok = a[0] == 0 ? count_atom(seed, a) : a[0] == 1 ? slime_atom(seed, a) : a[0] == 2 ? cell_atom(seed, a) : cluster_atom(seed, a);
         }
         if (!ok) return false;
         k += na * ATOM;
@@ -170,13 +222,32 @@ __device__ __forceinline__ u64 splitmix(u64 z) {
     return z ^ (z >> 31);
 }
 
-// Units base..base+n of a search; passing offsets (unordered) go to out. mode: 0 range (seed = base + i),
-// 1 structure seeds (low 48 bits of base + i), 2 random (splitmix(rng + base + i)).
-extern "C" __global__ void filter(u64 base, u64 n, int mode, u64 rng, unsigned *out, unsigned *count, unsigned cap) {
+// search.rs permute
+__device__ u64 permute(u64 i, u64 n, u64 key) {
+    if (n <= 1) return i;
+    int k = 64 - __clzll((long long)(n - 1));
+    u64 mask = k == 64 ? ~0ULL : (1ULL << k) - 1;
+    int s = (k + 1) / 2;
+    u64 x = i;
+    for (;;) {
+        x = (x ^ key) & mask;
+        x = (x * 0xBF58476D1CE4E5B9ULL) & mask;
+        x ^= x >> s;
+        x = (x ^ (key >> 32)) & mask;
+        x = (x * 0x94D049BB133111EBULL) & mask;
+        x ^= x >> s;
+        if (x < n) return x;
+    }
+}
+
+// Units lo..lo+n of a search (shuffled by permute(unit, total, key) when total > 0); passing offsets
+// (unordered) go to out. mode: 0 range (seed = base + unit), 1 structure seeds (low 48 bits of
+// base + unit), 2 random (splitmix(base + unit), base = generator seed).
+extern "C" __global__ void filter(u64 lo, u64 n, int mode, u64 base, u64 total, u64 key, unsigned *out, unsigned *count, unsigned cap) {
     u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    u64 u = base + i;
-    i64 seed = mode == 2 ? (i64)splitmix(rng + u) : mode == 1 ? (i64)(u & MASK48) : (i64)u;
+    u64 u = (total ? permute(lo + i, total, key) : lo + i) + base;
+    i64 seed = mode == 2 ? (i64)splitmix(u) : mode == 1 ? (i64)(u & MASK48) : (i64)u;
     if (eval(seed)) {
         unsigned k = atomicAdd(count, 1u);
         if (k < cap) out[k] = (unsigned)i;
