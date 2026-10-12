@@ -80,16 +80,16 @@ PRESETS = {  # ready-made queries (overworld speedrun parts and common hunts)
     "quad witch huts (AFK spot)": "cluster('swamp_hut', count=4, dist=128, within=20000, afk=True)",
     "triple witch huts": "cluster('swamp_hut', count=3, dist=128, within=10000, afk=True)",
     "double ocean monument": "cluster('monument', count=2, dist=128, within=10000, afk=True)",
-    "slime farm": "slime(radius=128, within=500) >= 16",
+    "slime farm (top ~1%)": "slime(radius=128, within=300) >= 37",
     "mushroom island near spawn": "island(biomes=['mushroom_fields'], within=1500, window=1024)",
     "biggest mushroom island (record)": "maximize(island(biomes=['mushroom_fields'], within=3000, window=1500))",
-    "all biomes near spawn": "biome_count(within=3000, step=32) >= 45",
-    "structure bingo": "bingo(within=1500) >= 13",
+    "almost every biome near spawn": "biome_count(within=3000, step=32) >= 54",
+    "structure bingo": "bingo(within=1500) >= 14",
     "desert temple inside a village": "overlap('desert_pyramid', 'village', within=3000)",
     "stronghold under a village": "near('stronghold', 'village', dist=96, within=3000)",
-    "three strongholds close together": "cluster('stronghold', count=3, dist=1200, within=3000)",
+    "all three ring-1 strongholds close to spawn": "stronghold(within=1800) >= 3",
     "basement igloo near spawn": "igloo(within=600, tags=['basement'])",
-    "ocean ruin city": "cluster('ocean_ruin', count=5, dist=96, within=3000)",
+    "ocean ruin cluster near spawn": "ocean_ruin(within=500, tags=['cluster'])",
 }
 GROUPS = ("and", "or", "not")
 MAX_TABLE_ROWS = 200_000
