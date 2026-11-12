@@ -133,16 +133,19 @@ mod py {
 
         /// Evaluates a query for one seed: details JSON if it matches, else None. Queries with an
         /// objective get a trailing {"type": "score"} entry.
-        fn check(&self, seed: i64, query: &str) -> PyResult<Option<String>> {
+        fn check(&self, py: Python<'_>, seed: i64, query: &str) -> PyResult<Option<String>> {
             let cond = self.parse(query)?;
-            let mut ev = Eval::new(&self.w, seed, &[]);
-            if !ev.eval(&cond) {
-                return Ok(None);
-            }
-            if cond.has_objective() {
-                ev.details.push(serde_json::json!({"type": "score", "value": ev.score}));
-            }
-            Ok(Some(Value::Array(ev.details).to_string()))
+            let world = self.w.clone();
+            Ok(py.detach(move || {
+                let mut ev = Eval::new(&world, seed, &[]);
+                if !ev.eval(&cond) {
+                    return None;
+                }
+                if cond.has_objective() {
+                    ev.details.push(serde_json::json!({"type": "score", "value": ev.score}));
+                }
+                Some(Value::Array(ev.details).to_string())
+            }))
         }
 
         /// Single-seed scan: every anchor within `within` of (x, z) where the query, moved there,
@@ -258,7 +261,8 @@ mod py {
     struct PySearch {
         inner: Arc<Search>,
         job: Mutex<Option<JoinHandle<u64>>>,
-        started: Mutex<Option<Instant>>,
+        /// Run time: seconds of finished runs, and when the current run started. Resuming keeps counting.
+        clock: Arc<Mutex<(f64, Option<Instant>)>>,
         resume: Mutex<u64>,
         gpu_note: String,
     }
@@ -294,7 +298,7 @@ mod py {
                     Err(e) => format!("GPU not used: {e}"),
                 }
             };
-            Ok(PySearch { inner: Arc::new(s), job: Mutex::new(None), started: Mutex::new(None), resume: Mutex::new(0), gpu_note })
+            Ok(PySearch { inner: Arc::new(s), job: Mutex::new(None), clock: Arc::default(), resume: Mutex::new(0), gpu_note })
         }
 
         /// Total work units (seeds, or structure seeds in structure_seeds mode).
@@ -310,6 +314,7 @@ mod py {
                 return Err(PyRuntimeError::new_err("search already running"));
             }
             let s = self.inner.clone();
+            *self.clock.lock().unwrap() = (0.0, None); // the estimate resets the counters too
             Ok(py.detach(move || s.estimate(seconds, threads).to_string()))
         }
 
@@ -321,10 +326,15 @@ mod py {
                 return Err(PyRuntimeError::new_err("search already running"));
             }
             self.inner.stop.store(false, Relaxed);
-            *self.started.lock().unwrap() = Some(Instant::now());
-            let s = self.inner.clone();
+            self.clock.lock().unwrap().1 = Some(Instant::now());
+            let (s, clock) = (self.inner.clone(), self.clock.clone());
             let to = s.mode.units();
-            *job = Some(std::thread::spawn(move || s.run(from_unit, to, threads)));
+            *job = Some(std::thread::spawn(move || {
+                let r = s.run(from_unit, to, threads);
+                let mut c = clock.lock().unwrap();
+                c.0 += c.1.take().map_or(0.0, |t| t.elapsed().as_secs_f64());
+                r
+            }));
             Ok(())
         }
 
@@ -349,7 +359,8 @@ mod py {
         /// Live counters for the UI (rates/ETA are derived in Python).
         fn stats(&self) -> std::collections::HashMap<&'static str, f64> {
             let st = &self.inner.stats;
-            let elapsed = self.started.lock().unwrap().map_or(0.0, |t| t.elapsed().as_secs_f64());
+            let c = *self.clock.lock().unwrap();
+            let elapsed = c.0 + c.1.map_or(0.0, |t| t.elapsed().as_secs_f64());
             std::collections::HashMap::from([
                 ("units_done", self.inner.units_done()),
                 ("units_total", self.inner.mode.units() as f64),

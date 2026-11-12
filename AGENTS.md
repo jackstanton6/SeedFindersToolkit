@@ -52,6 +52,7 @@ python tests/loot_oracle.py fill                   # dedicated server; loot tabl
 python tests/loot_oracle.py world 0 12345 35467 59104   # real worlds; chest seeds, portal obsidian
 cd engine && cargo test --release -- --ignored     # parity suite: must stay at zero mismatches
 python tests/test_query.py                         # DSL tests
+python tests/test_engine.py                        # query errors and hints, match details, stop/resume, max results
 python tests/test_gui.py                           # blocks <-> text, wizard, drag and drop (offscreen)
 cd engine && cargo test --release --test gpu -- --ignored   # GPU parity (CUDA device)
 python -m sft                                      # GUI

@@ -331,6 +331,20 @@ impl AnyRng {
     }
 }
 
+/// Both hashes `Positional::from_hash` can need of a name. Names are fixed per version while
+/// every seed forks from them, so they are hashed once at load.
+#[derive(Clone, Copy, Debug)]
+pub struct NameHash {
+    md5: (u64, u64),
+    java: i32,
+}
+
+impl NameHash {
+    pub fn of(name: &str) -> Self {
+        NameHash { md5: seed_from_hash(name), java: java_hash(name) }
+    }
+}
+
 /// PositionalRandomFactory
 #[derive(Clone, Copy, Debug)]
 pub enum Positional {
@@ -346,12 +360,13 @@ impl Positional {
         }
     }
     pub fn from_hash(&self, name: &str) -> AnyRng {
+        self.from_name(NameHash::of(name))
+    }
+    /// `from_hash` for a name hashed ahead of time.
+    pub fn from_name(&self, h: NameHash) -> AnyRng {
         match *self {
-            Positional::Xoroshiro { lo, hi } => {
-                let (a, b) = seed_from_hash(name);
-                AnyRng::X(Xoroshiro::from_parts(a ^ lo, b ^ hi))
-            }
-            Positional::Legacy { seed } => AnyRng::J(JavaRandom::new(java_hash(name) as i64 ^ seed)),
+            Positional::Xoroshiro { lo, hi } => AnyRng::X(Xoroshiro::from_parts(h.md5.0 ^ lo, h.md5.1 ^ hi)),
+            Positional::Legacy { seed } => AnyRng::J(JavaRandom::new(h.java as i64 ^ seed)),
         }
     }
     pub fn from_seed(&self, s: i64) -> AnyRng {

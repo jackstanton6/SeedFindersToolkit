@@ -169,7 +169,8 @@ const AX_Z: u8 = 4;
 #[derive(Clone, Debug)]
 pub enum Spline<C> {
     Const(f32),
-    Multi { coord: C, loc: Vec<f32>, val: Vec<Spline<C>>, der: Vec<f32> },
+    // loc and der are shared: every seed's compiled spline points at the same tables
+    Multi { coord: C, loc: Arc<[f32]>, val: Vec<Spline<C>>, der: Arc<[f32]> },
 }
 
 #[derive(Clone, Debug)]
@@ -348,7 +349,7 @@ impl Df {
 
 pub enum CSpline {
     Const(f32),
-    Multi { coord: usize, loc: Vec<f32>, val: Vec<CSpline>, der: Vec<f32> },
+    Multi { coord: usize, loc: Arc<[f32]>, val: Vec<CSpline>, der: Arc<[f32]> },
 }
 
 pub enum S {
@@ -945,7 +946,7 @@ impl<'a> Compiler<'a> {
             return n.clone();
         }
         let params = self.noise_params.get(name).unwrap_or_else(|| panic!("unknown noise {name}"));
-        let n = Arc::new(params.create(&mut self.random.from_hash(name)));
+        let n = Arc::new(params.create(&mut self.random.from_name(params.id)));
         self.noises.insert(name.to_string(), n.clone());
         n
     }

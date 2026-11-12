@@ -8,6 +8,7 @@ use crate::gpu;
 use crate::query::{parse, Cond, Eval};
 use crate::world::{Heightmap, World};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -205,6 +206,12 @@ pub struct Search {
     gpu: Option<(Arc<gpu::Gpu>, Vec<i32>)>,
     /// Visit the units in shuffled order with this key (`permute`); resume points stay valid.
     pub shuffle: Option<u64>,
+    /// The last resume point, and the unit ranges past it that other workers had already finished
+    /// when the run stopped: resuming there skips them (no match twice, no unit counted twice).
+    done_ahead: Mutex<(u64, Vec<(u64, u64)>)>,
+    /// (structure seed, part) -> first sister not checked yet, for parts a stop interrupted or that
+    /// finished in a unit that did not: redoing the unit continues there.
+    sisters_done: Mutex<HashMap<(i64, u64), i64>>,
 }
 
 impl Search {
@@ -286,15 +293,15 @@ impl Search {
     fn with(world: Arc<World>, cond: Cond, mode: Mode, natives: Vec<Native>) -> Search {
         let ranked = cond.has_objective();
         let max_results = if ranked { 100 } else { u64::MAX };
-        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]), error: Mutex::new(None), gpu: None, shuffle: None }
+        Search { world, cond, mode, natives, stop: AtomicBool::new(false), stats: Stats::default(), results: Mutex::new(vec![]), max_results, ranked, top: Mutex::new(vec![]), error: Mutex::new(None), gpu: None, shuffle: None, done_ahead: Mutex::new((0, vec![])), sisters_done: Mutex::default() }
     }
 
     fn full(&self, seed: i64, local: &mut Local) {
         let mut ev = Eval::new(&self.world, seed, &self.natives);
         local.full += 1;
         if ev.eval(&self.cond) {
-            let n = self.stats.matched.fetch_add(1, Relaxed) + 1;
             if self.ranked {
+                self.stats.matched.fetch_add(1, Relaxed);
                 // only seeds entering the running top `max_results` scores are reported
                 let mut top = self.top.lock().unwrap();
                 let k = top.partition_point(|&s| s >= ev.score);
@@ -303,10 +310,14 @@ impl Search {
                 }
                 top.insert(k, ev.score);
                 top.truncate(self.max_results.min(usize::MAX as u64) as usize);
-            } else if n >= self.max_results {
-                self.stop.store(true, Relaxed);
-                if n > self.max_results {
-                    return;
+            } else {
+                // max_results is a total (resumes included): a match takes one of the places left or is dropped
+                let taken = self.stats.matched.fetch_update(Relaxed, Relaxed, |m| (m < self.max_results).then_some(m + 1));
+                if !taken.is_ok_and(|m| m + 1 < self.max_results) {
+                    self.stop.store(true, Relaxed);
+                    if taken.is_err() {
+                        return;
+                    }
                 }
             }
             self.results.lock().unwrap().push(Match { seed, details: ev.details, score: ev.score });
@@ -336,10 +347,12 @@ impl Search {
                         local.passed += 1;
                     }
                     let span = 65536 / of as i64;
+                    let end = (k as i64 + 1) * span;
+                    let first = self.sisters_done.lock().unwrap().get(&(low, k)).copied().unwrap_or(k as i64 * span);
                     // flushed per sister so slow queries still show progress
-                    for upper in k as i64 * span..(k as i64 + 1) * span {
+                    for upper in first..end {
                         if self.stop.load(Relaxed) {
-                            self.stats.partial.fetch_sub((upper - k as i64 * span) as u64, Relaxed);
+                            self.sisters_done.lock().unwrap().insert((low, k), upper);
                             return false;
                         }
                         local.checks += 1;
@@ -347,7 +360,12 @@ impl Search {
                         self.flush(local);
                         self.stats.partial.fetch_add(1, Relaxed);
                     }
-                    self.stats.partial.fetch_sub(span as u64, Relaxed);
+                    if first < end {
+                        self.stats.partial.fetch_sub(span as u64, Relaxed);
+                    }
+                    if of > 1 {
+                        self.sisters_done.lock().unwrap().insert((low, k), end);
+                    }
                 }
             }
             _ => self.seed_unit(self.seed(i), local),
@@ -366,10 +384,21 @@ impl Search {
     /// Runs units [from, to) on `threads` workers (after the GPU pre-filter when enabled). Returns
     /// the resume point: every unit before it is done.
     pub fn run(&self, from: u64, to: u64, threads: usize) -> u64 {
-        match &self.gpu {
+        if !self.ranked && self.stats.matched.load(Relaxed) >= self.max_results {
+            return from; // resumed after the last place was taken
+        }
+        {
+            let mut d = self.done_ahead.lock().unwrap();
+            if d.0 != from {
+                d.1.clear(); // not a resume of the last stop
+            }
+        }
+        let resume = match &self.gpu {
             Some((g, prog)) => self.run_gpu(g, prog, from, to, threads),
             None => from + self.run_cpu(to - from, 1, &|p| from + p, &|_| 0, threads),
-        }
+        };
+        self.done_ahead.lock().unwrap().0 = resume;
+        resume
     }
 
     /// Batches of units go through the GPU program; the CPU then checks the survivors as usual. The
@@ -412,6 +441,9 @@ impl Search {
                 let gap = |p: u64| surv[p as usize] as u64 - if p == 0 { 0 } else { surv[p as usize - 1] as u64 + 1 };
                 let p = self.run_cpu(surv.len() as u64, parts, &|p| lo + surv[p as usize] as u64, &gap, threads);
                 if p < surv.len() as u64 {
+                    // the GPU-rejected units before the resume point are done as well
+                    self.stats.units_done.fetch_add(gap(p), Relaxed);
+                    self.stats.checks.fetch_add(gap(p), Relaxed);
                     return lo + surv[p as usize] as u64;
                 }
                 let tail = hi - lo - surv.last().map_or(0, |&l| l as u64 + 1);
@@ -425,13 +457,16 @@ impl Search {
 
     /// Runs positions [0, n), position p being unit `unit_at(p)` split into `parts`, on workers
     /// pulling blocks in order; a finished position also credits `skipped(p)` units the GPU already
-    /// rejected. Returns the first position not done (n when all are).
+    /// rejected. Returns the first position not done (n when all are); what is done past it goes to
+    /// `done_ahead`. `unit_at` must be increasing.
     fn run_cpu(&self, n: u64, parts: u64, unit_at: &(dyn Fn(u64) -> u64 + Sync), skipped: &(dyn Fn(u64) -> u64 + Sync), threads: usize) -> u64 {
         // small blocks when there is little work, so slow queries still use every thread
         let block = if matches!(self.mode, Mode::StructureSeeds { .. }) { 1 } else { (n / (threads.max(1) as u64 * 16)).clamp(1, 256) };
         let left: Vec<AtomicU64> = if parts > 1 { (0..n).map(|_| AtomicU64::new(parts)).collect() } else { vec![] };
         let next = AtomicU64::new(0);
-        let resume = AtomicU64::new(u64::MAX);
+        let skip = self.done_ahead.lock().unwrap().1.clone();
+        // (first part not done, end of its block) of every interrupted worker; all else below `next` is done
+        let rest = Mutex::new(vec![]);
         std::thread::scope(|sc| {
             for _ in 0..threads.max(1) {
                 sc.spawn(|| {
@@ -441,24 +476,29 @@ impl Search {
                         if lo >= n * parts {
                             break;
                         }
-                        for q in lo..(lo + block).min(n * parts) {
+                        let hi = (lo + block).min(n * parts);
+                        for q in lo..hi {
                             let (p, part) = (q / parts, (q % parts, parts));
                             let i = unit_at(p);
+                            if skip.iter().any(|&(a, b)| a <= i && i < b) {
+                                continue; // finished before the stop this run resumes from
+                            }
                             let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.unit(i, part, &mut local))).unwrap_or_else(|e| {
                                 let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
                                 self.error.lock().unwrap().get_or_insert(format!("engine error at unit {i}: {msg}"));
                                 self.stop.store(true, Relaxed);
                                 false
                             });
-                            if self.stop.load(Relaxed) || !ok {
-                                resume.fetch_min(p, Relaxed);
-                                self.flush(&mut local);
-                                return;
-                            }
                             // a split unit is done when its last part is
-                            if parts == 1 || left[p as usize].fetch_sub(1, Relaxed) == 1 {
+                            let done = ok && (parts == 1 || left[p as usize].fetch_sub(1, Relaxed) == 1);
+                            if done {
                                 local.units += 1 + skipped(p);
                                 local.checks += skipped(p);
+                            }
+                            if self.stop.load(Relaxed) || !ok {
+                                rest.lock().unwrap().push((q + ok as u64, hi));
+                                self.flush(&mut local);
+                                return;
                             }
                             if local.full > 0 || local.units >= 1024 {
                                 self.flush(&mut local); // live progress for slow queries
@@ -469,7 +509,26 @@ impl Search {
                 });
             }
         });
-        resume.load(Relaxed).min(next.load(Relaxed) / parts).min(n)
+        let end = next.load(Relaxed).min(n * parts);
+        let mut rest = rest.into_inner().unwrap();
+        rest.retain(|r| r.0 < r.1);
+        rest.sort();
+        let Some(&(first, _)) = rest.first() else { return end / parts };
+        // whole units between the interrupted blocks are done: a resume must not redo them
+        let mut ahead = self.done_ahead.lock().unwrap();
+        let mut done = |a: u64, b: u64| {
+            let (pa, pb) = (a.div_ceil(parts), b / parts);
+            if pa < pb {
+                ahead.1.push((unit_at(pa), unit_at(pb - 1) + 1));
+            }
+        };
+        let mut at = first;
+        for &(a, b) in &rest {
+            done(at, a);
+            at = b;
+        }
+        done(at, end);
+        first / parts
     }
 
     /// Turns on the GPU pre-filter; Err says why it cannot be used for this search.
@@ -554,6 +613,8 @@ impl Search {
         self.results.lock().unwrap().clear();
         self.top.lock().unwrap().clear();
         *self.error.lock().unwrap() = None;
+        *self.done_ahead.lock().unwrap() = (0, vec![]);
+        self.sisters_done.lock().unwrap().clear();
         self.stop.store(false, Relaxed);
     }
 }

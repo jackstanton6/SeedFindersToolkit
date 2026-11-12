@@ -61,7 +61,7 @@ class Job:
         self.rows: list[tuple[int, list]] = []
         self.py_rejected = 0
         # maximize()/minimize(): rows are the best `keep` seeds by score, best first
-        self.ranked, self.keep = self.search.ranked, max_results or 100
+        self.ranked, self.keep, self.max_results = self.search.ranked, max_results or 100, max_results
         self.seeds_per_unit = 65536 if mode == "structure_seeds" else 1
 
     def estimate(self, seconds=3.0, threads=None) -> dict:

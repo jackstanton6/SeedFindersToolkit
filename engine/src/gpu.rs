@@ -289,9 +289,7 @@ fn clauses(w: &World, c: &Cond) -> Vec<Vec<Atom>> {
         Cond::Metric { m, min, .. } if *min >= 1.0 => match m {
             Metric::Count { s, at, within } => one(count_atom(w, s, *at, *within, *min)),
             Metric::Loot { s, at, within, .. } => one(count_atom(w, s, *at, *within, 1.0)),
-            Metric::Portal { at, within, .. } => one(w.structures.resolve("ruined_portal").and_then(|(set, _)| {
-                count_atom(w, &Sel { set, only: None, biomes: None, tags: vec![] }, *at, *within, 1.0)
-            })),
+            Metric::Portal { set, at, within, .. } => one(count_atom(w, &Sel { set: *set, only: None, biomes: None, tags: vec![] }, *at, *within, 1.0)),
             // as in Eval::pre: starts sit up to ~128 blocks from their locate position
             Metric::Near { a, b, dist, at, within } => {
                 let others = if a.set == b.set { 2.0 } else { 1.0 };

@@ -475,6 +475,9 @@ class Main(QMainWindow):
 
     def resume_search(self):
         if self.job and not self.busy() and self.resume_unit < self.job.stats()["units_total"]:
+            if not self.job.ranked and 0 < self.job.max_results <= self.job.stats()["matched"]:
+                self.say("max results reached (max counts every match of a search, resumes included): start a new search with a higher max")
+                return
             self.job.start(self.threads.value(), self.resume_unit)
             self.timer.start()
             self.say(f"resumed at unit {self.resume_unit}")
@@ -609,7 +612,7 @@ class Main(QMainWindow):
         within, ok = QInputDialog.getInt(self, "scan", "search radius around the map centre (blocks)", 5000, 100, 100_000)
         if not ok:
             return
-        step, ok = QInputDialog.getInt(self, "scan", "anchor grid step (blocks); coordinates in the query are relative", 64, 4, 4096)
+        step, ok = QInputDialog.getInt(self, "scan", "anchor grid step (blocks); the query is moved from the map centre to each anchor", 64, 4, 4096)
         if not ok:
             return
         tree, _ = query.split_python(self.editor.query())

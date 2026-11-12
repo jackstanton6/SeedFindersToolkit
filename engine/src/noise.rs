@@ -2,7 +2,7 @@
 //! NormalNoise (new octave/normalisation model) and BlendedNoise's fbm sets.
 
 use crate::density::Volume;
-use crate::rng::{AnyRng, Rng};
+use crate::rng::{AnyRng, NameHash, Rng};
 use serde_json::Value;
 
 const GRADIENT: [[f32; 3]; 16] = [
@@ -178,6 +178,8 @@ enum Normalization {
 #[derive(Clone)]
 pub struct NormalNoise {
     octaves: Vec<(i32, f64, f64)>, // (octave index, frequency, amplitude)
+    names: Vec<NameHash>,          // "octave_<index>" per octave, hashed once (every seed needs them)
+    pub id: NameHash,              // the noise's registry id
     norm: f64,
     pub range: f32,
 }
@@ -223,7 +225,7 @@ fn parity_factor(base_amp: f64, count: i32, mods: &[f64]) -> f64 {
 }
 
 impl NormalNoise {
-    pub fn from_json(v: &Value) -> Self {
+    pub fn from_json(id: &str, v: &Value) -> Self {
         let base = v["base_octave"].as_i64().unwrap() as i32;
         let count = v.get("octave_count").and_then(Value::as_i64).unwrap_or(1) as i32;
         let base_amp = v.get("base_amplitude").and_then(Value::as_f64).unwrap_or(1.0);
@@ -244,7 +246,8 @@ impl NormalNoise {
             target *= parity / factor;
             factor = parity;
         }
-        Self { octaves, norm: factor, range: (target * 0.3333333333333333 * 6.0) as f32 }
+        let names = octaves.iter().map(|o| NameHash::of(&format!("octave_{}", o.0))).collect();
+        Self { octaves, names, id: NameHash::of(id), norm: factor, range: (target * 0.3333333333333333 * 6.0) as f32 }
     }
 
     /// NormalNoise.create(random)
@@ -252,10 +255,9 @@ impl NormalNoise {
         let first = r.fork_positional();
         let second = r.fork_positional();
         let mut stack = NoiseStack::default();
-        for &(idx, freq, amp) in &self.octaves {
-            let name = format!("octave_{idx}");
-            let a = Perlin::new(&mut first.from_hash(&name), None);
-            let b = Perlin::new(&mut second.from_hash(&name), None);
+        for (&(_, freq, amp), &name) in self.octaves.iter().zip(&self.names) {
+            let a = Perlin::new(&mut first.from_name(name), None);
+            let b = Perlin::new(&mut second.from_name(name), None);
             let vf = (self.norm * amp) as f32;
             stack.layers.push((a, freq, vf));
             stack.layers.push((b, freq * 1.0181268882175227, vf));

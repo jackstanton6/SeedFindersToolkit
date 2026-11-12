@@ -40,14 +40,26 @@ maximize(biome_area("mushroom_fields", window=1500))
 maximize(slime(radius=128, within=500))
 ```
 
-**Anywhere:** `anywhere(cond, within=1000, step=64, anchor=None)` asks whether `cond` holds with its
-coordinates moved to some point within `within` of `at`, on a `step` grid or at the starts of the
-`anchor` structure. The first place found is reported as an `anchor` detail.
+**Anywhere:** `anywhere(cond, within=1000, at=(0,0), step=64, anchor=None)` asks whether `cond`
+holds when it is moved to some point within `within` of `at`, on a `step` grid or at the starts of
+the `anchor` structure. The first place found is reported as an `anchor` detail.
+
+Write `cond` as it should hold **at `at`**: it is moved by the offset from `at` to each anchor. With
+the default `at=(0,0)` the coordinates inside are simply relative to the anchor. With another `at`,
+give the inner condition the same `at`, or it stays that far away from every anchor:
 
 ```python
 anywhere(slime(radius=24) >= 6, within=800, step=32)
 anywhere(biome("cherry_grove", within=64, fraction=0.8), anchor="village", within=2000)
+anywhere(village(within=100, at=(5000, 5000)), at=(5000, 5000), within=1500)   # a village near some point around (5000, 5000)
 ```
+
+The same holds for a scan (GUI Tools menu, CLI `scan`): the query is moved from the scan centre to
+each anchor, so a scan around `--x 5000 --z 5000` wants `at=(5000, 5000)` in the query.
+
+**Mistakes are refused, not ignored.** An argument a condition does not take, an unknown structure,
+biome, `#tag`, climate parameter, `fluid` or `heightmap`, or an `at` that is not two whole numbers
+stops the query with a hint: `structure() has no argument 'withn'. Did you mean 'within'?`
 
 ## Structures
 

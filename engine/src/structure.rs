@@ -142,7 +142,7 @@ struct Template {
     size: [i32; 3],
     containers: Vec<([i32; 3], String)>, // blocks with NBT that are loot containers (+ LootTable), (y, x, z) order
     obsidian: Vec<[i32; 3]>,
-    frames: Vec<(usize, Vec<[i32; 3]>)>, // ruined portals: lightable frames reusing its obsidian (portal_frames)
+    frames: Vec<(usize, Vec<usize>)>, // ruined portals: lightable frames reusing its obsidian (portal_frames), as indices into `obsidian`
     markers: Vec<([i32; 3], String)>, // data markers (structure blocks in DATA mode), sorted by (y, x, z)
     jigsaws: Vec<([i32; 3], String, i32)>, // (pos, name, selection priority), sorted by (y, x, z)
 }
@@ -416,6 +416,8 @@ fn load_template(dir: &Path, location: &str) -> Result<Template, String> {
     markers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
     containers.sort_by_key(|(p, _)| (p[1], p[0], p[2]));
     let frames = if location.contains("ruined_portal/") { portal_frames(&obsidian) } else { vec![] };
+    let index: HashMap<[i32; 3], usize> = obsidian.iter().enumerate().map(|(i, p)| (*p, i)).collect();
+    let frames = frames.into_iter().map(|(len, on)| (len, on.iter().map(|p| index[p]).collect())).collect();
     Ok(Template { size, jigsaws, markers, containers, obsidian, frames })
 }
 
@@ -524,6 +526,11 @@ impl Structures {
         }
     }
 
+    /// Every structure and structure set id (for "did you mean" hints).
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.by_name.keys().chain(self.set_by_name.keys()).map(String::as_str)
+    }
+
     pub fn structure_id(&self, name: &str) -> Option<usize> {
         self.by_name.get(&ns(name)).copied()
     }
@@ -617,18 +624,26 @@ impl Structures {
     }
 
     pub fn is_structure_chunk(&self, set: usize, seed: i64, cx: i32, cz: i32) -> bool {
+        let Placement::Spread { spacing, .. } = self.sets[set].placement else { return false };
+        self.grid_chunk(set, seed, cx.div_euclid(spacing), cz.div_euclid(spacing)) == Some((cx, cz)) && self.chunk_ok(set, seed, cx, cz)
+    }
+
+    /// The rest of isStructureChunk for a chunk `grid_chunk` returned: frequency and exclusion zone.
+    pub fn chunk_ok(&self, set: usize, seed: i64, cx: i32, cz: i32) -> bool {
         let s = &self.sets[set];
-        let Placement::Spread { spacing, .. } = s.placement else { return false };
-        if self.grid_chunk(set, seed, cx.div_euclid(spacing), cz.div_euclid(spacing)) != Some((cx, cz)) {
-            return false;
-        }
         if !self.frequency_ok(s, seed, cx, cz) {
             return false;
         }
-        match s.exclusion {
-            None => true,
-            Some((other, r)) => !(cx - r..=cx + r).any(|x| (cz - r..=cz + r).any(|z| self.is_structure_chunk(other, seed, x, z))),
-        }
+        let Some((other, r)) = s.exclusion else { return true };
+        let Placement::Spread { spacing, .. } = self.sets[other].placement else { return true };
+        // vanilla tests every chunk of the square; only the other set's grid chunks can pass, so
+        // testing the grid cells that touch the square gives the same answer
+        !((cx - r).div_euclid(spacing)..=(cx + r).div_euclid(spacing)).any(|gx| {
+            ((cz - r).div_euclid(spacing)..=(cz + r).div_euclid(spacing)).any(|gz| {
+                let c = self.grid_chunk(other, seed, gx, gz).unwrap();
+                (c.0 - cx).abs() <= r && (c.1 - cz).abs() <= r && self.chunk_ok(other, seed, c.0, c.1)
+            })
+        })
     }
 
     /// ChunkGeneratorStructureState.generateRingPositions, first `n` positions only.
@@ -906,9 +921,10 @@ impl Structures {
                         let q = transform(*p, mirror, rot, pivot);
                         JavaRandom::new(pos_seed(q[0] + x0, q[1] + b[1], q[2] + z0)).next_float() >= 0.15
                     };
-                    let n = t.obsidian.iter().filter(|p| plain(p)).count();
-                    tags.push(format!("obsidian:{n}"));
-                    tags.push(format!("frame:{}", frame_value(&t.frames, plain)));
+                    // once per block: the frames share them
+                    let plain: Vec<bool> = t.obsidian.iter().map(plain).collect();
+                    tags.push(format!("obsidian:{}", plain.iter().filter(|p| **p).count()));
+                    tags.push(format!("frame:{}", frame_value(&t.frames, |&i| plain[i])));
                 }
             }
             _ => {}
@@ -1185,7 +1201,7 @@ pub fn portal_frames(obsidian: &[[i32; 3]]) -> Vec<(usize, Vec<[i32; 3]>)> {
 }
 
 /// `portal_frame` value: 10 minus the blocks the most complete frame still misses (10 = lightable).
-pub fn frame_value(frames: &[(usize, Vec<[i32; 3]>)], plain: impl Fn(&[i32; 3]) -> bool) -> usize {
+pub fn frame_value<T>(frames: &[(usize, Vec<T>)], plain: impl Fn(&T) -> bool) -> usize {
     10usize.saturating_sub(frames.iter().map(|(len, on)| len - on.iter().filter(|p| plain(p)).count()).min().unwrap_or(10))
 }
 

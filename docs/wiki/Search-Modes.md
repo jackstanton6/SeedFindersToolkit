@@ -48,14 +48,17 @@ for biome or terrain-driven queries, where every seed needs the full check anywa
 ## Stopping, resuming, max results
 
 Stop at any time. Every unit before the reported resume point is complete; Resume (GUI) or
-`--start-unit N` (CLI) continues from it. `max` stops after that many matches. With `maximize` or
+`--start-unit N` (CLI) continues from it. `max` stops after that many matches; in the window it
+counts every match of the search, resumes included, so Resume after reaching it finds nothing more
+(start a new search with a higher max). With `maximize` or
 `minimize` in the query the search never stops early: it keeps the best `max` seeds (default 100).
 
 ## One seed: scan, loot, placement
 
 - **Scan** (GUI Tools menu, CLI `scan`): runs the query over every point of a grid (or every start
-  of an anchor structure) in one seed, with the query's coordinates relative to each point, and
-  lists every place it matches, nearest first, as map pins.
+  of an anchor structure) in one seed and lists every place it matches, nearest first, as map pins.
+  The query is moved from the scan centre to each point: around the origin its coordinates are
+  relative to the point; for a scan centred elsewhere give its conditions that centre as `at`.
 
   ```sh
   python -m sft scan 12345 "village(within=150) >= 2" --within 10000 --step 128          # double villages

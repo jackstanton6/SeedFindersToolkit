@@ -56,7 +56,7 @@ pub enum Metric {
     /// `item` in the chests of one structure (the best one), or of all of them with `total`.
     Loot { s: Sel, item: String, enchant: Option<String>, at: (i32, i32), within: i32, total: bool },
     /// Best ruined portal: plain obsidian in its most complete frame (`frame`), or in the whole portal.
-    Portal { at: (i32, i32), within: i32, frame: bool },
+    Portal { set: usize, only: Option<usize>, at: (i32, i32), within: i32, frame: bool },
     Native { lib: usize, name: CString, params: CString },
 }
 
@@ -85,8 +85,98 @@ pub enum Cond {
 // Parsing (JSON from sft/query.py)
 // ------------------------------------------------------------------------------------------------
 
-fn pair(v: &Value, k: &str, default: (i32, i32)) -> (i32, i32) {
-    v.get(k).and_then(Value::as_array).map_or(default, |a| (a[0].as_i64().unwrap_or(0) as i32, a[1].as_i64().unwrap_or(0) as i32))
+fn pair(v: &Value, k: &str, default: (i32, i32)) -> Result<(i32, i32), String> {
+    match v.get(k) {
+        None => Ok(default),
+        Some(p) => match p.as_array().map(|a| a.iter().map(Value::as_i64).collect::<Option<Vec<_>>>()) {
+            Some(Some(a)) if a.len() == 2 => Ok((a[0] as i32, a[1] as i32)),
+            _ => Err(format!("'{k}' must be two whole numbers like (x, z), got {p}")),
+        },
+    }
+}
+
+/// Edit distance, for "did you mean" hints.
+fn distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut prev = row[0];
+        row[0] = i;
+        for j in 1..=b.len() {
+            let cur = row[j];
+            row[j] = (prev + (a[i - 1] != b[j - 1]) as usize).min(row[j] + 1).min(row[j - 1] + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// " Did you mean 'x'?" for the closest of `options` (namespaces ignored), or "" when none is close.
+fn hint<'a>(name: &str, options: impl Iterator<Item = &'a str>) -> String {
+    let short = |s: &'a str| s.rsplit(':').next().unwrap_or(s);
+    let name = name.trim_start_matches('#').rsplit(':').next().unwrap_or(name);
+    options
+        .map(|o| (distance(name, short(o)), short(o)))
+        .filter(|(d, o)| *d <= (name.len().max(o.len()) / 3).max(1))
+        .min()
+        .map_or(String::new(), |(_, o)| format!(" Did you mean '{o}'?"))
+}
+
+/// The arguments a condition takes besides op, min and max.
+fn arguments(op: &str) -> &'static [&'static str] {
+    match op {
+        "structure" | "nearest" => &["name", "at", "within", "biome", "tags"],
+        "near" => &["a", "b", "dist", "at", "within", "biome", "tags"],
+        "cluster" => &["names", "count", "dist", "at", "within", "afk", "biome", "tags"],
+        "chain" => &["names", "dist", "at", "within", "biome", "tags"],
+        "overlap" => &["a", "b", "at", "within", "margin", "biome", "tags"],
+        "bingo" => &["names", "at", "within", "biome", "tags"],
+        "biome" => &["name", "at", "within", "y", "step", "fraction"],
+        "biome_area" => &["name", "at", "within", "window", "y", "step"],
+        "biome_count" => &["among", "at", "within", "y", "step"],
+        "biome_border" => &["a", "b", "at", "within", "y", "step"],
+        "island" => &["biomes", "at", "within", "window", "y", "step", "min_circularity", "max_elongation", "lagoon"],
+        "climate" => &["param", "at", "y"],
+        "height" => &["at", "heightmap"],
+        "peak" | "trench" | "cliff" | "overhang" | "void" => &["at", "within", "step"],
+        "lake" => &["fluid", "at", "within", "step"],
+        "slime" => &["radius", "at", "within"],
+        "loot" => &["name", "item", "enchant", "at", "within", "total", "biome", "tags"],
+        "portal_frame" | "portal_obsidian" => &["at", "within"],
+        "native" => &["plugin", "filter", "params"],
+        "cmp" | "maximize" | "minimize" => &["expr"],
+        "anywhere" => &["cond", "at", "within", "step", "anchor"],
+        "and" | "or" => &["args"],
+        "not" => &["arg"],
+        "num" => &["value"],
+        "neg" => &["a"],
+        "add" | "sub" | "mul" | "div" => &["a", "b"],
+        _ => &[],
+    }
+}
+
+/// Rejects arguments the condition does not take (a typo would otherwise silently use the default).
+fn known_arguments(v: &Value) -> Result<(), String> {
+    let (Some(o), Some(op)) = (v.as_object(), v["op"].as_str()) else { return Ok(()) };
+    let known = arguments(op);
+    if known.is_empty() {
+        return Ok(()); // unknown op: reported by the caller
+    }
+    match o.keys().find(|k| !known.contains(&k.as_str()) && !["op", "min", "max"].contains(&k.as_str())) {
+        Some(k) => Err(format!("{op}() has no argument '{k}'.{}", hint(k, known.iter().copied().chain(["min", "max"])))),
+        None => Ok(()),
+    }
+}
+
+/// One of `options` (the first when the argument is absent).
+fn choice<'a>(v: &'a Value, k: &str, options: &[&'a str]) -> Result<&'a str, String> {
+    match v.get(k) {
+        None => Ok(options[0]),
+        Some(x) => match x.as_str().filter(|s| options.contains(s)) {
+            Some(s) => Ok(s),
+            None => Err(format!("'{k}' must be one of {options:?}, got {x}.{}", hint(x.as_str().unwrap_or_default(), options.iter().copied()))),
+        },
+    }
 }
 fn int(v: &Value, k: &str, default: i64) -> i32 {
     v.get(k).and_then(Value::as_i64).unwrap_or(default) as i32
@@ -109,9 +199,11 @@ impl Parser<'_> {
         };
         let mut set = 0;
         for n in names {
+            let b = &self.w.biomes;
             set |= match n.strip_prefix('#') {
-                Some(tag) => self.w.biomes.tag(&crate::density::ns(tag)),
-                None => 1u128 << self.w.biomes.id(n).ok_or(format!("unknown biome '{n}'"))?,
+                Some(tag) if b.has_tag(&crate::density::ns(tag)) => b.tag(&crate::density::ns(tag)),
+                Some(_) => return Err(format!("unknown biome tag '{n}'.{}", hint(n, b.tag_names()).replacen('\'', "'#", 1))),
+                None => 1u128 << b.id(n).ok_or_else(|| format!("unknown biome '{n}'.{}", hint(n, b.names.iter().map(String::as_str))))?,
             };
         }
         Ok(set)
@@ -120,7 +212,7 @@ impl Parser<'_> {
     /// A structure selector; `biome` and `tags` come from the enclosing node.
     fn sel(&self, name: &Value, v: &Value) -> Result<Sel, String> {
         let n = name.as_str().ok_or("structure name must be a string")?;
-        let (set, only) = self.w.structures.resolve(n).ok_or(format!("unknown structure '{n}'"))?;
+        let (set, only) = self.w.structures.resolve(n).ok_or_else(|| format!("unknown structure '{n}'.{}", hint(n, self.w.structures.names().flat_map(|s| [s, s.strip_suffix('s').unwrap_or(s)]))))?;
         Ok(Sel {
             set,
             only,
@@ -131,6 +223,7 @@ impl Parser<'_> {
 
     fn sels(&self, v: &Value, k: &str) -> Result<Vec<Sel>, String> {
         match &v[k] {
+            Value::Array(a) if a.is_empty() => Err(format!("{} needs at least one name in '{k}'", v["op"])),
             Value::Array(a) => a.iter().map(|n| self.sel(n, v)).collect(),
             Value::Null => Err(format!("{} needs '{k}'", v["op"])),
             one => Ok(vec![self.sel(one, v)?]),
@@ -140,7 +233,7 @@ impl Parser<'_> {
     /// (metric, default min, default max) for a metric node.
     fn metric(&self, v: &Value) -> Result<(Metric, f64, f64), String> {
         let op = v["op"].as_str().unwrap_or_default();
-        let at = pair(v, "at", (0, 0));
+        let at = pair(v, "at", (0, 0))?;
         let within = int(v, "within", 0);
         let (y, step) = (int(v, "y", 64), int(v, "step", 16).max(4));
         let inf = f64::INFINITY;
@@ -199,13 +292,15 @@ impl Parser<'_> {
             ),
             "climate" => (
                 Metric::Climate {
-                    param: CLIMATE_PARAMS.iter().position(|p| Some(*p) == v["param"].as_str()).ok_or(format!("climate param must be one of {CLIMATE_PARAMS:?}"))?,
+                    param: CLIMATE_PARAMS.iter().position(|p| Some(*p) == v["param"].as_str()).ok_or_else(|| {
+                        format!("climate param must be one of {CLIMATE_PARAMS:?}.{}", hint(v["param"].as_str().unwrap_or_default(), CLIMATE_PARAMS.iter().copied()))
+                    })?,
                     pos: (at.0, y, at.1),
                 },
                 -inf,
                 inf,
             ),
-            "height" => (Metric::Height { at, ocean_floor: v.get("heightmap").and_then(Value::as_str) == Some("ocean_floor") }, -inf, inf),
+            "height" => (Metric::Height { at, ocean_floor: choice(v, "heightmap", &["surface", "ocean_floor"])? == "ocean_floor" }, -inf, inf),
             "peak" | "trench" | "cliff" | "overhang" | "void" | "lake" => {
                 let kind = match op {
                     "peak" => Terrain::Peak,
@@ -213,12 +308,12 @@ impl Parser<'_> {
                     "cliff" => Terrain::Cliff,
                     "overhang" => Terrain::Overhang,
                     "void" => Terrain::Void,
-                    _ => Terrain::Lake(if v["fluid"].as_str() == Some("water") { Block::Water } else { Block::Lava }),
+                    _ => Terrain::Lake(if choice(v, "fluid", &["lava", "water"])? == "water" { Block::Water } else { Block::Lava }),
                 };
                 let min = if matches!(kind, Terrain::Peak | Terrain::Trench) { -inf } else { 1.0 };
                 (Metric::Terrain { kind, at, within, step: int(v, "step", 32).max(1) }, min, inf)
             }
-            "slime" => (Metric::Slime { radius: int(v, "radius", 128), at, within }, 1.0, inf),
+            "slime" => (Metric::Slime { radius: int(v, "radius", 128).max(0), at, within }, 1.0, inf),
             "loot" => {
                 let item = crate::density::ns(v["item"].as_str().ok_or("loot needs an item")?);
                 let enchant = v.get("enchant").and_then(Value::as_str).map(crate::density::ns);
@@ -227,7 +322,8 @@ impl Parser<'_> {
             }
             "portal_frame" | "portal_obsidian" => {
                 let frame = op == "portal_frame";
-                (Metric::Portal { at, within: int(v, "within", 1000), frame }, if frame { 10.0 } else { 1.0 }, inf)
+                let (set, only) = self.w.structures.resolve("ruined_portal").ok_or("this version has no ruined portals")?;
+                (Metric::Portal { set, only, at, within: int(v, "within", 1000), frame }, if frame { 10.0 } else { 1.0 }, inf)
             }
             "native" => {
                 let plugin = v["plugin"].as_str().ok_or("native needs 'plugin'")?;
@@ -246,6 +342,7 @@ impl Parser<'_> {
     }
 
     fn expr(&self, v: &Value) -> Result<Expr, String> {
+        known_arguments(v)?;
         Ok(match v["op"].as_str().unwrap_or_default() {
             "num" => Expr::Num(flt(v, "value", 0.0)),
             "neg" => Expr::Neg(Box::new(self.expr(&v["a"])?)),
@@ -264,6 +361,7 @@ impl Parser<'_> {
 
     fn cond(&self, v: &Value) -> Result<Cond, String> {
         let op = v["op"].as_str().ok_or_else(|| format!("condition without op: {v}"))?;
+        known_arguments(v)?;
         let kids = |k: &str| -> Result<Vec<Cond>, String> { v[k].as_array().ok_or(format!("{op} needs '{k}'"))?.iter().map(|c| self.cond(c)).collect() };
         let bound = |k: &str, d: f64| v.get(k).and_then(Value::as_f64).unwrap_or(d);
         Ok(match op {
@@ -274,7 +372,7 @@ impl Parser<'_> {
             "maximize" | "minimize" => Cond::Objective { e: self.expr(&v["expr"])?, maximize: op == "maximize" },
             "anywhere" => Cond::Anywhere {
                 c: Box::new(self.cond(&v["cond"])?),
-                at: pair(v, "at", (0, 0)),
+                at: pair(v, "at", (0, 0))?,
                 within: int(v, "within", 1000),
                 step: int(v, "step", 64).max(1),
                 anchor: v.get("anchor").filter(|a| a.is_string()).map(|a| self.sel(a, &Value::Null)).transpose()?,
@@ -350,13 +448,7 @@ impl Expr {
 }
 
 impl Cond {
-    /// The same query with every coordinate moved by `d`.
-    pub fn shifted(&self, d: (i32, i32)) -> Cond {
-        let mut c = self.clone();
-        c.shift(d);
-        c
-    }
-
+    /// Moves every coordinate of the query by `d`.
     fn shift(&mut self, d: (i32, i32)) {
         match self {
             Cond::And(v) | Cond::Or(v) => v.iter_mut().for_each(|c| c.shift(d)),
@@ -395,6 +487,11 @@ pub fn locate(w: &World, set: usize, c: (i32, i32)) -> (i32, i32) {
 /// Placement chunks of a random-spread set whose locate position is within `r` of `at`.
 /// 48-bit only: no biome or terrain work.
 pub fn potential(w: &World, set: usize, seed: i64, at: (i32, i32), r: i32) -> Vec<(i32, i32)> {
+    potential_n(w, set, seed, at, r, usize::MAX)
+}
+
+/// `potential`, stopping after `n` chunks (pre-checks only need to know there are enough).
+fn potential_n(w: &World, set: usize, seed: i64, at: (i32, i32), r: i32, n: usize) -> Vec<(i32, i32)> {
     let st = &w.structures;
     let s = &st.sets[set];
     let Placement::Spread { spacing, .. } = s.placement else { return vec![] };
@@ -405,8 +502,11 @@ pub fn potential(w: &World, set: usize, seed: i64, at: (i32, i32), r: i32) -> Ve
     for gx in gx0..=gx1 {
         for gz in gz0..=gz1 {
             let c = st.grid_chunk(set, seed, gx, gz).unwrap();
-            if dist2(locate(w, set, c), at) <= (r as i64).pow(2) && st.is_structure_chunk(set, seed, c.0, c.1) {
+            if dist2(locate(w, set, c), at) <= (r as i64).pow(2) && st.chunk_ok(set, seed, c.0, c.1) {
                 out.push(c);
+                if out.len() >= n {
+                    return out;
+                }
             }
         }
     }
@@ -437,6 +537,29 @@ pub fn is_slime_chunk(seed: i64, x: i32, z: i32) -> bool {
         .wrapping_add(z.wrapping_mul(389711) as i64)
         ^ 987234911;
     JavaRandom::new(s).next_bound(10) == 0
+}
+
+/// Most slime chunks around any chunk centre within `within` of `at` (`slime_count` of each centre).
+/// Every chunk is tested once; the chunks a centre counts are the same offsets for all of them.
+fn slime_best(seed: i64, radius: i32, at: (i32, i32), within: i32) -> i32 {
+    let k = radius / 16;
+    let (x0, x1, z0, z1) = ((at.0 - within) >> 4, (at.0 + within) >> 4, (at.1 - within) >> 4, (at.1 + within) >> 4);
+    let (w, h) = ((x1 - x0 + 1 + 2 * k) as usize, (z1 - z0 + 1 + 2 * k) as usize);
+    let mut grid = vec![false; w * h];
+    for (i, g) in grid.iter_mut().enumerate() {
+        *g = is_slime_chunk(seed, x0 - k + (i % w) as i32, z0 - k + (i / w) as i32);
+    }
+    let offsets: Vec<(i32, i32)> = (-k..=k).flat_map(|dx| (-k..=k).map(move |dz| (dx, dz))).filter(|&(dx, dz)| dist2((dx * 16, dz * 16), (0, 0)) <= (radius as i64).pow(2)).collect();
+    let mut best = 0;
+    for x in x0..=x1 {
+        for z in z0..=z1 {
+            if dist2((x * 16 + 8, z * 16 + 8), at) <= (within as i64).pow(2) {
+                let n = offsets.iter().filter(|&&(dx, dz)| grid[(z + dz - z0 + k) as usize * w + (x + dx - x0 + k) as usize]).count();
+                best = best.max(n as i32);
+            }
+        }
+    }
+    best
 }
 
 /// Slime chunks whose centre is within `radius` of `c`.
@@ -755,13 +878,25 @@ impl<'w> Eval<'w> {
 
     /// Cheap necessary condition from the low 48 bits (false = cannot match).
     pub fn pre(&self, c: &Cond) -> bool {
-        let pot = |s: &Sel, at, r| potential(self.w, s.set, self.seed, at, r);
+        self.pre_moved(c, 0)
+    }
+
+    /// `pre` for a condition that may be moved up to `moved` blocks (inside anywhere()): every
+    /// search radius grows by that much.
+    fn pre_moved(&self, c: &Cond, moved: i32) -> bool {
+        let pot = |s: &Sel, at, r: i32| potential(self.w, s.set, self.seed, at, r + moved);
+        // true when the set is not random-spread (no 48-bit check) or has a chunk in range
+        let any = |set: usize, at, r: i32| !matches!(self.w.structures.sets[set].placement, Placement::Spread { .. }) || !potential_n(self.w, set, self.seed, at, r + moved, 1).is_empty();
         let loc = |s: &Sel, c| locate(self.w, s.set, c);
         match c {
-            Cond::And(v) => v.iter().all(|c| self.pre(c)),
-            Cond::Or(v) => v.iter().any(|c| self.pre(c)),
+            Cond::And(v) => v.iter().all(|c| self.pre_moved(c, moved)),
+            Cond::Or(v) => v.iter().any(|c| self.pre_moved(c, moved)),
+            // structure anchors are start positions, up to `reach` from the locate position that is in range
+            Cond::Anywhere { c, within, anchor, .. } => self.pre_moved(c, moved + within.max(&0) + anchor.as_ref().map_or(0, |a| self.w.structures.reach(a.set))),
+            // a distance up to `max` needs a start that close
+            Cond::Metric { m: Metric::Nearest { s, at, within }, max, .. } if max.is_finite() => any(s.set, *at, (*within).min(max.ceil() as i32)),
             Cond::Metric { m, min, .. } if *min >= 1.0 => match m {
-                Metric::Count { s, at, within } if self.spread(s) => pot(s, *at, *within).len() as f64 >= *min,
+                Metric::Count { s, at, within } if self.spread(s) => potential_n(self.w, s.set, self.seed, *at, within + moved, min.ceil() as usize).len() as f64 >= *min,
                 // starts can sit ~64-128 blocks from their locate position, so distances get slack
                 Metric::Near { a, b, dist, at, within } if self.spread(a) && self.spread(b) => {
                     let pb = pot(b, *at, within + dist + 128);
@@ -772,12 +907,15 @@ impl<'w> Eval<'w> {
                 Metric::Cluster { sels, dist, at, within, .. } if sels.iter().all(|s| self.spread(s)) => {
                     let slack = self.reach(sels);
                     let groups: Vec<Vec<(i32, i32)>> = sels.iter().flat_map(|s| pot(s, *at, within + dist + slack).into_iter().map(move |c| vec![loc(s, c)])).collect();
-                    groups.len() as f64 >= *min && max_cover(&groups, dist + slack, *at, within + slack, min.ceil() as usize).0 as f64 >= *min
+                    groups.len() as f64 >= *min && max_cover(&groups, dist + slack, *at, within + slack + moved, min.ceil() as usize).0 as f64 >= *min
                 }
-                Metric::Slime { radius, at, within } => self.slime_max(*radius, *at, *within) as f64 >= *min,
-                Metric::Loot { s, at, within, .. } if self.spread(s) => !pot(s, *at, *within).is_empty(),
-                Metric::Portal { at, within, .. } => self.w.structures.resolve("ruined_portal").is_none_or(|(set, _)| !potential(self.w, set, self.seed, *at, *within).is_empty()),
-                Metric::Bingo { sels, at, within } => sels.iter().filter(|s| !self.spread(s) || !pot(s, *at, *within).is_empty()).count() as f64 >= *min,
+                // ponytail: not pre-checked inside anywhere(): the widened scan costs as much as the full check
+                Metric::Slime { radius, at, within } => moved > 0 || self.slime_max(*radius, *at, *within) as f64 >= *min,
+                Metric::Loot { s, at, within, .. } => any(s.set, *at, *within),
+                Metric::Portal { set, at, within, .. } => any(*set, *at, *within),
+                Metric::Chain { sels, at, within, .. } => any(sels[0].set, *at, *within),
+                Metric::Overlap { a, at, within, .. } => any(a.set, *at, *within),
+                Metric::Bingo { sels, at, within } => sels.iter().filter(|s| any(s.set, *at, *within)).count() as f64 >= *min,
                 _ => true,
             },
             _ => true,
@@ -788,34 +926,32 @@ impl<'w> Eval<'w> {
         if within <= 0 {
             return slime_count(self.seed, at, radius);
         }
-        let mut best = 0;
-        for x in (at.0 - within) >> 4..=(at.0 + within) >> 4 {
-            for z in (at.1 - within) >> 4..=(at.1 + within) >> 4 {
-                let c = (x * 16 + 8, z * 16 + 8);
-                if dist2(c, at) <= (within as i64).pow(2) {
-                    best = best.max(slime_count(self.seed, c, radius));
-                }
-            }
-        }
-        best
+        slime_best(self.seed, radius, at, within)
     }
 
+    /// Whether `c` holds. A condition that fails leaves no details and no score behind, so a
+    /// failed branch of an `or`, a `not` or an anywhere() anchor does not show up in the match.
     pub fn eval(&mut self, c: &Cond) -> bool {
+        let (details, score) = (self.details.len(), self.score);
+        let ok = self.holds(c);
+        if !ok {
+            self.details.truncate(details);
+            self.score = score;
+        }
+        ok
+    }
+
+    fn holds(&mut self, c: &Cond) -> bool {
         match c {
             Cond::And(v) => v.iter().all(|c| self.eval(c)),
             Cond::Or(v) => v.iter().any(|c| self.eval(c)),
             Cond::Not(c) => !self.eval(c),
             Cond::Metric { m, min, max } => {
-                let before = self.details.len();
                 let v = match m {
                     Metric::Cluster { sels, dist, at, within, afk } => self.cluster(sels, *dist, *at, *within, *afk, *min, true),
                     _ => self.value(m, true),
                 };
-                let ok = v >= *min && v <= *max;
-                if !ok {
-                    self.details.truncate(before);
-                }
-                ok
+                v >= *min && v <= *max
             }
             Cond::Cmp { e, min, max } => {
                 let v = self.expr(e);
@@ -827,13 +963,16 @@ impl<'w> Eval<'w> {
                 v.is_finite()
             }
             Cond::Anywhere { c, at, within, step, anchor } => {
+                // one copy of the condition, moved from anchor to anchor
+                let (mut moved, mut last) = ((**c).clone(), *at);
                 for p in self.anchors(*at, *within, *step, anchor.as_ref()) {
+                    moved.shift((p.0 - last.0, p.1 - last.1));
+                    last = p;
                     let before = self.details.len();
-                    if self.eval(&c.shifted((p.0 - at.0, p.1 - at.1))) {
+                    if self.eval(&moved) {
                         self.details.insert(before, json!({"type": "anchor", "x": p.0, "z": p.1}));
                         return true;
                     }
-                    self.details.truncate(before);
                 }
                 false
             }
@@ -1021,12 +1160,11 @@ impl<'w> Eval<'w> {
                 }
                 (if *total { sum } else { best }) as f64
             }
-            Metric::Portal { at, within, frame } => {
-                let Some((set, only)) = self.w.structures.resolve("ruined_portal") else { return 0.0 };
+            Metric::Portal { set, only, at, within, frame } => {
                 let key = if *frame { "frame:" } else { "obsidian:" };
                 let mut best: Option<Hit> = None;
                 let value = |h: &Hit| h.tags.iter().find_map(|t| t.strip_prefix(key)).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
-                for h in self.instances(set, only, *at, *within) {
+                for h in self.instances(*set, *only, *at, *within) {
                     if best.as_ref().is_none_or(|b| value(&h) > value(b)) {
                         best = Some(h);
                     }
@@ -1088,7 +1226,7 @@ impl<'w> Eval<'w> {
         let ocean = self.w.biomes.tag("minecraft:is_ocean");
         let land: Vec<bool> = g.ids.iter().map(|&b| biomes.map_or(!contains(ocean, b), |set| contains(set, b))).collect();
         let near = |k: usize| dist2(g.pos(k), at) <= (within.max(step / 2) as i64).pow(2);
-        let water = g.components(&land.iter().map(|l| !l).collect::<Vec<_>>());
+        let water = if lagoon { g.components(&land.iter().map(|l| !l).collect::<Vec<_>>()) } else { vec![] };
         let mut best = 0.0;
         let comps = g.components(&land);
         let mut owner = vec![usize::MAX; land.len()];
@@ -1191,18 +1329,19 @@ impl<'w> Eval<'w> {
 pub fn scan(w: &World, natives: &[Native], seed: i64, cond: &Cond, at: (i32, i32), within: i32, step: i32, anchor: Option<&Sel>) -> Vec<((i32, i32), Vec<Value>)> {
     use rayon::prelude::*;
     let anchors = Eval::new(w, seed, natives).anchors(at, within, step, anchor);
+    // per worker: one evaluator (structures stay cached) and one copy of the condition, moved along
     anchors
-        .par_chunks(32)
-        .flat_map_iter(|chunk| {
-            let mut ev = Eval::new(w, seed, natives);
-            chunk
-                .iter()
-                .filter_map(|&p| {
-                    ev.details.clear();
-                    ev.eval(&cond.shifted((p.0 - at.0, p.1 - at.1))).then(|| (p, std::mem::take(&mut ev.details)))
-                })
-                .collect::<Vec<_>>()
-        })
+        .par_iter()
+        .map_init(
+            || (Eval::new(w, seed, natives), cond.clone(), at),
+            |(ev, moved, last), &p| {
+                moved.shift((p.0 - last.0, p.1 - last.1));
+                *last = p;
+                ev.details.clear();
+                ev.eval(moved).then(|| (p, std::mem::take(&mut ev.details)))
+            },
+        )
+        .flatten()
         .collect()
 }
 
@@ -1222,6 +1361,34 @@ mod tests {
         let afk = vec![vec![(0, 0), (10, 10)], vec![(250, 0), (260, 10)]];
         assert_eq!(max_cover(&afk, 131, (0, 0), 1000, usize::MAX).0, 2);
         assert_eq!(max_cover(&afk, 129, (0, 0), 1000, usize::MAX).0, 1);
+    }
+
+    #[test]
+    fn slime_best_matches_per_centre_counts() {
+        for (seed, radius, at, within) in [(1i64, 128, (0, 0), 300), (-77, 24, (-1000, 517), 200), (5, 0, (3, 3), 40), (9, 100, (-5, 20), 1), (2, 7, (0, 0), 64)] {
+            let mut brute = 0;
+            for x in (at.0 - within) >> 4..=(at.0 + within) >> 4 {
+                for z in (at.1 - within) >> 4..=(at.1 + within) >> 4 {
+                    let c = (x * 16 + 8, z * 16 + 8);
+                    if dist2(c, at) <= (within as i64).pow(2) {
+                        brute = brute.max(slime_count(seed, c, radius));
+                    }
+                }
+            }
+            assert_eq!(slime_best(seed, radius, at, within), brute, "seed {seed} radius {radius}");
+        }
+    }
+
+    #[test]
+    fn hints_and_argument_checks() {
+        assert_eq!(hint("withn", ["within", "at", "name"].into_iter()), " Did you mean 'within'?");
+        assert_eq!(hint("#is_jungl", ["minecraft:is_jungle", "minecraft:is_ocean"].into_iter()), " Did you mean 'is_jungle'?");
+        assert_eq!(hint("zzz", ["within", "at"].into_iter()), "");
+        let err = known_arguments(&json!({"op": "structure", "name": "village", "withn": 1})).unwrap_err();
+        assert_eq!(err, "structure() has no argument 'withn'. Did you mean 'within'?");
+        assert!(known_arguments(&json!({"op": "structure", "name": "village", "within": 1, "min": 2})).is_ok());
+        assert!(pair(&json!({"at": [5]}), "at", (0, 0)).is_err());
+        assert_eq!(pair(&json!({"at": [5, -6]}), "at", (0, 0)), Ok((5, -6)));
     }
 
     #[test]

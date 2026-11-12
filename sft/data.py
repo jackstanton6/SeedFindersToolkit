@@ -28,7 +28,7 @@ def data_dir(version: str) -> Path:
 
 
 def _fetch(url: str) -> bytes:
-    with urllib.request.urlopen(url) as r:
+    with urllib.request.urlopen(url, timeout=60) as r:
         return r.read()
 
 
@@ -37,7 +37,9 @@ def download_server_jar(version: str) -> Path:
     if jar.exists():
         return jar
     manifest = json.loads(_fetch(MANIFEST))
-    entry = next(v for v in manifest["versions"] if v["id"] == version)
+    entry = next((v for v in manifest["versions"] if v["id"] == version), None)
+    if entry is None:
+        raise ValueError(f"Mojang's version list has no version '{version}'")
     server = json.loads(_fetch(entry["url"]))["downloads"]["server"]
     blob = _fetch(server["url"])
     if hashlib.sha1(blob).hexdigest() != server["sha1"]:
@@ -61,11 +63,13 @@ def extract(version: str, server_jar: Path) -> None:
     # The overworld biome table is built in code; the data generator dumps it as a report.
     work = ROOT / "cache" / f"datagen-{version}"
     work.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
+    gen = subprocess.run(
         ["java", "-DbundlerMainClass=net.minecraft.data.Main", "-jar", str(server_jar.resolve()),
          "--reports", "--output", "generated"],
-        cwd=work, check=True, capture_output=True,
+        cwd=work, capture_output=True, text=True,
     )
+    if gen.returncode:
+        raise RuntimeError(f"the data generator failed (java exit {gen.returncode}):\n{(gen.stderr or gen.stdout)[-2000:]}")
     shutil.copytree(work / "generated/reports/biome_parameters", out / "reports/biome_parameters", dirs_exist_ok=True)
     write_items(work / "generated/reports/minecraft/components/item", out / "items.json")
     (out / "version.txt").write_text(version)

@@ -142,7 +142,7 @@ def main():
     c.add_argument("query")
     sc = sub.add_parser("scan", help="find every place in one seed where a query matches")
     sc.add_argument("seed", type=int)
-    sc.add_argument("query", help="coordinates in the query are relative to each anchor")
+    sc.add_argument("query", help="written as it should hold at --x/--z; it is moved from there to each anchor")
     sc.add_argument("--x", type=int, default=0)
     sc.add_argument("--z", type=int, default=0)
     sc.add_argument("--within", type=int, default=5000)
@@ -174,7 +174,10 @@ def main():
     elif a.cmd == "data":
         print("data ready in", sft.data.setup(a.mc_version, a.jar))
     else:
-        {"search": cmd_search, "check": cmd_check, "scan": cmd_scan, "locate": cmd_locate, "loot": cmd_loot, "crack": cmd_crack, "plugins": cmd_plugins}[a.cmd](a)
+        try:
+            {"search": cmd_search, "check": cmd_check, "scan": cmd_scan, "locate": cmd_locate, "loot": cmd_loot, "crack": cmd_crack, "plugins": cmd_plugins}[a.cmd](a)
+        except (ValueError, FileNotFoundError) as e:  # bad query, unknown name, missing data: no traceback
+            sys.exit(f"error: {e}")
 
 
 if __name__ == "__main__":

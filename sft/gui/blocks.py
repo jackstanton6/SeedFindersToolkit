@@ -75,7 +75,7 @@ SPECS = {
 # blocks holding another block
 CONTAINERS = {
     "anywhere": ("scores", "somewhere in an area", "somewhere within {within} blocks of {at}, checked every {step} blocks:", ["anchor"],
-                 {"within": 1000, "at": SPAWN, "step": 64}, "The inner condition, moved to any spot in the area (coordinates inside are relative)."),
+                 {"within": 1000, "at": SPAWN, "step": 64}, "The inner condition, moved to any spot in the area: write it as it should hold at the area's centre."),
     "maximize": ("scores", "rank: highest first", "rank seeds, highest first, by:", [], {}, "Keeps the best seeds by this number instead of filtering."),
     "minimize": ("scores", "rank: lowest first", "rank seeds, lowest first, by:", [], {}, "Keeps the best seeds by this number, lowest first."),
 }

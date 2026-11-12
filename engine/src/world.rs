@@ -71,7 +71,7 @@ impl World {
                 Err(e) => { skipped.insert(id, e); }
             }
         }
-        let noises = json_dir(&wg.join("noise"))?.into_iter().map(|(id, v)| (id, NormalNoise::from_json(&v))).collect();
+        let noises = json_dir(&wg.join("noise"))?.into_iter().map(|(id, v)| { let n = NormalNoise::from_json(&id, &v); (id, n) }).collect();
         let settings_path = wg.join("noise_settings/overworld.json");
         let s: Value = serde_json::from_str(&std::fs::read_to_string(&settings_path).map_err(|e| format!("{}: {e}", settings_path.display()))?)
             .map_err(|e| e.to_string())?;

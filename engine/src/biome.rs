@@ -236,6 +236,14 @@ impl Biomes {
         }
     }
 
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.contains_key(tag)
+    }
+
+    pub fn tag_names(&self) -> impl Iterator<Item = &str> {
+        self.tags.keys().map(String::as_str)
+    }
+
     pub fn tag(&self, tag: &str) -> BiomeSet {
         self.tags.get(tag).map_or(0, |vals| vals.iter().fold(0, |acc, x| acc | self.set(x)))
     }
