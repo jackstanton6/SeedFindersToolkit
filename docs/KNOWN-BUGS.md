@@ -5,8 +5,6 @@ and have not been reproduced; check each one before fixing it. Remove an entry w
 
 ## Bugs
 
-7. **CLI edge cases.** An empty `--seeds-file` silently
-   falls back to range mode (`"list" if seeds`).
 8. **Two `island()` conditions overwrite each other's details.** `Eval::island` removes every
    earlier `island` detail before adding its own.
 9. **Small robustness gaps.** `query._literal` only catches `ValueError`, so input such as

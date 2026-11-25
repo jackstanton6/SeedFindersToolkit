@@ -18,6 +18,8 @@ def fmt_secs(s) -> str:
 
 def cmd_search(a):
     seeds = [int(x) for x in open(a.seeds_file).read().split()] if a.seeds_file else None
+    if seeds == []:
+        raise ValueError(f"no seeds in {a.seeds_file}")
     if a.sisters is not None:
         seeds = sft.sisters([a.sisters])
     job = sft.Job(a.version, a.query, "list" if seeds else a.mode, a.start, a.count, seeds, a.max, gpu=a.gpu, shuffle=a.shuffle)

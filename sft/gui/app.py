@@ -423,6 +423,8 @@ class Main(QMainWindow):
                 if not path:
                     return None
                 seeds, mode = [int(x) for x in open(path).read().split()], "list"
+                if not seeds:
+                    raise ValueError(f"no seeds in {path}")
             elif kind == "plugin":
                 src = self.loaded[1].seed_sources[mode_text.removeprefix("plugin: ")]
                 seeds, mode = [s for _, s in zip(range(count), src())], "list"

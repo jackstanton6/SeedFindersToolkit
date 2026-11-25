@@ -269,7 +269,7 @@ all test files pass before the last commit.
   `python -m sft data 26.3`); a fill error stops the search with the unit and message.
 - [x] 6. Plugins everywhere: `PyWorld.parse` gets the loaded native libraries; `check`, the GUI
   re-check and `scan` evaluate `py(...)` terms, so they agree with a search.
-- [ ] 7. CLI: `crack --max N` stops after N seeds; an empty `--seeds-file` is an error; `scan` with
+- [x] 7. CLI: `crack --max N` stops after N seeds; an empty `--seeds-file` is an error; `scan` with
   only `py(...)` terms runs them.
 - [ ] 8. `island()` details carry their condition, so two island conditions both show.
 - [ ] 9. `query._literal` turns any literal error into a `QueryError`; the example markdown exporter

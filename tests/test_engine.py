@@ -175,6 +175,18 @@ def test_check_and_scan_run_plugins_like_a_search():
     assert sft.scan("26.3", seed, 'py("example_python.seed_contains", text="7")', 0, 0, 100, 100)  # py terms alone
 
 
+def test_cli_edge_cases():
+    import subprocess
+    import tempfile
+    cli = lambda *args: subprocess.run([sys.executable, "-m", "sft", *args], capture_output=True, text=True)  # noqa: E731
+    empty = Path(tempfile.mkdtemp()) / "seeds.txt"
+    empty.write_text("\n")
+    r = cli("search", "village(within=300)", "--seeds-file", str(empty), "--sample", "0")
+    assert r.returncode != 0 and "no seeds in" in r.stderr, r.stderr  # used to search seeds 0.. instead
+    r = cli("search", "village(within=300)", "--count", "2000", "--max", "3", "--sample", "0")
+    assert r.returncode == 0 and len(r.stdout.split()) == 3, r
+
+
 if __name__ == "__main__":
     test_mistakes_are_refused_with_a_hint()
     test_failed_branches_leave_nothing_behind()
@@ -184,4 +196,5 @@ if __name__ == "__main__":
     test_crack_runs_as_a_job()
     test_loot_without_tables_is_refused()
     test_check_and_scan_run_plugins_like_a_search()
+    test_cli_edge_cases()
     print("ok")
