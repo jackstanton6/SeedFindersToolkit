@@ -429,7 +429,7 @@ impl Search {
                 while lo < to && !self.stop.load(Relaxed) {
                     let hi = (lo + batch).min(to);
                     let t = Instant::now();
-                    match g.filter(prog, mode, base, lo, hi - lo, shuffle) {
+                    match g.filter(prog, None, mode, base, lo, hi - lo, shuffle) {
                         // a closed channel means the CPU side stopped
                         Ok(surv) => if tx.send((lo, hi, surv)).is_err() { return },
                         Err(e) => {

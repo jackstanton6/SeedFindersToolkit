@@ -343,6 +343,10 @@ impl NameHash {
     pub fn of(name: &str) -> Self {
         NameHash { md5: seed_from_hash(name), java: java_hash(name) }
     }
+    /// The MD5 halves (the GPU forks from them).
+    pub fn md5(&self) -> (u64, u64) {
+        self.md5
+    }
 }
 
 /// PositionalRandomFactory

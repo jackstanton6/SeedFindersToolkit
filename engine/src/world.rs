@@ -190,6 +190,17 @@ impl<'w> Seeded<'w> {
         Seeded { w, seed, comp, climate, terrain: None }
     }
 
+    /// The compiled climate samplers (temperature, humidity, continentalness, erosion, depth,
+    /// weirdness) and the compiler holding their noises: the GPU port walks them.
+    pub fn climate_samplers(&self) -> (&[Arc<S>], &Compiler<'w>) {
+        (&self.climate, &self.comp)
+    }
+
+    /// Whether this world forks its randoms with Xoroshiro (all 26.x overworlds) rather than JavaRandom.
+    pub fn xoroshiro(&self) -> bool {
+        !self.w.legacy_random
+    }
+
     /// Raw climate parameters at a block position (point path), as floats.
     pub fn climate_at(&self, ctx: &mut Ctx, x: i32, y: i32, z: i32) -> [f32; 6] {
         std::array::from_fn(|i| self.climate[i].sample(ctx, x, y, z))

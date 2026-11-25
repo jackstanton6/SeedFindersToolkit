@@ -65,7 +65,7 @@ fn gpu_prefilter_matches_cpu() {
                 }
             };
             let cpu: Vec<u32> = (0..n).into_par_iter().filter(|&i| Eval::new(&w, seed_of(i), &[]).pre(&cond)).map(|i| i as u32).collect();
-            let got = g.filter(&prog, mode, base, 0, n, shuffle).unwrap();
+            let got = g.filter(&prog, None, mode, base, 0, n, shuffle).unwrap();
             let missing = cpu.iter().filter(|i| got.binary_search(i).is_err()).count();
             eprintln!("mode {mode} shuffle {} {q}: cpu {} gpu {}", shuffle.is_some(), cpu.len(), got.len());
             assert_eq!(missing, 0, "GPU dropped seeds the CPU keeps: {q}");
@@ -110,7 +110,7 @@ fn gpu_speed() {
     let prog = gpu::program(&w, &cond);
     for n in [1u64 << 20, 1 << 24] {
         let t = std::time::Instant::now();
-        let k = g.filter(&prog, 0, 0, 0, n, None).unwrap().len();
+        let k = g.filter(&prog, None, 0, 0, 0, n, None).unwrap().len();
         eprintln!("GPU {n}: {k} pass, {:.0}/s", n as f64 / t.elapsed().as_secs_f64());
     }
     let t = std::time::Instant::now();
@@ -120,4 +120,44 @@ fn gpu_speed() {
     let t = std::time::Instant::now();
     let k = (0..n).into_par_iter().filter(|&i| Eval::new(&w, i as i64, &[]).pre(&cond) && Eval::new(&w, i as i64, &[]).eval(&cond)).count();
     eprintln!("CPU pre+eval {n}: {k} match, {:.0}/s", n as f64 / t.elapsed().as_secs_f64());
+}
+
+/// The device climate (noises, samplers, R-tree) against Seeded::biome with a fresh context, on
+/// random seeds and positions: zero mismatches; ties (the GPU says unsure) are counted and must be rare.
+#[test]
+#[ignore]
+fn gpu_biomes_match_cpu() {
+    let w = world();
+    let g = gpu::get().expect("no usable CUDA device");
+    let clim = g.upload_climate(&gpu::ClimateProgram::new(&w).unwrap()).unwrap();
+    let mut r = sft_engine::rng::JavaRandom::new(7);
+    use sft_engine::rng::Rng;
+    let n = 200_000;
+    let seeds: Vec<i64> = (0..n).map(|i| if i % 1000 == 0 { r.next_long() } else { 0 }).collect();
+    let seeds: Vec<i64> = seeds.iter().scan(0, |last, &s| { if s != 0 { *last = s; } Some(*last) }).collect();
+    let quarts: Vec<[i32; 3]> = (0..n).map(|_| [r.next_bound(20_000) - 10_000, r.next_bound(96) - 16, r.next_bound(20_000) - 10_000]).collect();
+    let t = std::time::Instant::now();
+    let got = g.biomes(&clim, &seeds, &quarts).unwrap();
+    eprintln!("GPU: {n} biomes in {:.2}s", t.elapsed().as_secs_f64());
+    let (wr, sr, qr) = (&w, &seeds, &quarts);
+    let want: Vec<i32> = (0..n)
+        .into_par_iter()
+        .chunks(1000)
+        .flat_map_iter(|ix| {
+            let (seeds, quarts) = (sr, qr);
+            let s = sft_engine::world::Seeded::new(wr, seeds[ix[0]]);
+            ix.into_iter().map(move |i| {
+                let q = quarts[i];
+                s.biome(&mut sft_engine::world::BiomeCtx::cached(), q[0], q[1], q[2]) as i32
+            }).collect::<Vec<_>>()
+        })
+        .collect();
+    let unsure = got.iter().filter(|&&b| b < 0).count();
+    let wrong: Vec<usize> = (0..n).filter(|&i| got[i] >= 0 && got[i] != want[i]).collect();
+    eprintln!("{} mismatches, {unsure} unsure", wrong.len());
+    for &i in wrong.iter().take(5) {
+        eprintln!("  seed {} quart {:?}: gpu {} cpu {}", seeds[i], quarts[i], w.biomes.name(got[i] as u16), w.biomes.name(want[i] as u16));
+    }
+    assert!(wrong.is_empty());
+    assert!(unsure * 1000 < n, "{unsure} unsure");
 }

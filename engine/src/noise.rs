@@ -250,6 +250,12 @@ impl NormalNoise {
         Self { octaves, names, id: NameHash::of(id), norm: factor, range: (target * 0.3333333333333333 * 6.0) as f32 }
     }
 
+    /// What `create` needs besides the random, for the GPU: per octave the name hash, frequency and
+    /// float amplitude of its first layer (the second layer has frequency * 1.0181268882175227).
+    pub fn octave_layers(&self) -> Vec<(NameHash, f64, f32)> {
+        self.octaves.iter().zip(&self.names).map(|(&(_, freq, amp), &name)| (name, freq, (self.norm * amp) as f32)).collect()
+    }
+
     /// NormalNoise.create(random)
     pub fn create(&self, r: &mut AnyRng) -> NoiseStack {
         let first = r.fork_positional();

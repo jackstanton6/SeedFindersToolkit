@@ -122,6 +122,30 @@ impl Climate {
         }
     }
 
+    /// The R-tree for the GPU, flattened: nodes [leaf index or -1, first kid, kid count, space],
+    /// kid node ids, spaces (7 x [min, max] each) and the biome of each leaf (leaf i has space i).
+    pub fn flat(&self) -> (Vec<[i32; 4]>, Vec<i32>, Vec<i64>, Vec<u16>) {
+        fn walk(c: &Climate, n: &Node, nodes: &mut Vec<[i32; 4]>, kids: &mut Vec<i32>, spaces: &mut Vec<i64>) -> i32 {
+            let id = nodes.len() as i32;
+            match n {
+                Node::Leaf(i) => nodes.push([*i as i32, 0, 0, *i as i32]),
+                Node::Sub(s, ks) => {
+                    nodes.push([-1, 0, ks.len() as i32, (spaces.len() / 14) as i32]);
+                    spaces.extend(s.iter().flat_map(|p| [p.min, p.max]));
+                    let ids: Vec<i32> = ks.iter().map(|k| walk(c, k, nodes, kids, spaces)).collect();
+                    nodes[id as usize][1] = kids.len() as i32;
+                    kids.extend(ids);
+                }
+            }
+            id
+        }
+        // leaf spaces first, so leaf i's space is space i
+        let mut spaces: Vec<i64> = self.leaves.iter().flat_map(|(s, _)| s.iter().flat_map(|p| [p.min, p.max])).collect();
+        let (mut nodes, mut kids) = (vec![], vec![]);
+        walk(self, &self.root, &mut nodes, &mut kids, &mut spaces);
+        (nodes, kids, spaces, self.leaves.iter().map(|l| l.1).collect())
+    }
+
     /// BiomeSource.possibleBiomes
     pub fn possible(&self) -> BiomeSet {
         self.leaves.iter().fold(0, |acc, (_, b)| acc | 1u128 << b)

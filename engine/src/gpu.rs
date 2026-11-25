@@ -5,8 +5,11 @@
 //! slime chunks). Lowering only drops or weakens terms, so the GPU keeps a superset of the seeds the
 //! CPU pre-check keeps, and the CPU still runs `pre` and the full check on every survivor.
 
+use crate::density::{CSpline, S};
+use crate::noise::{NoiseStack, NormalNoise};
 use crate::query::{Cond, Metric, Sel};
 use crate::world::World;
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -17,7 +20,7 @@ const PTX: Option<&str> = Some(concat!(include_str!(concat!(env!("OUT_DIR"), "/g
 #[cfg(not(sft_cuda))]
 const PTX: Option<&str> = None;
 
-const ATOM: usize = 16;
+const ATOM: usize = 24;
 const PROG_INTS: usize = 4096;
 type Atom = [i32; ATOM];
 type Ptr = u64;
@@ -43,6 +46,7 @@ struct Api {
     #[allow(clippy::type_complexity)]
     cuLaunchKernel: unsafe extern "C" fn(*mut c_void, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, *mut c_void, *mut *mut c_void, *mut *mut c_void) -> R,
     cuCtxSynchronize: unsafe extern "C" fn() -> R,
+    cuCtxSetLimit: unsafe extern "C" fn(c_int, usize) -> R,
     cuGetErrorString: unsafe extern "C" fn(R, *mut *const c_char) -> R,
 }
 
@@ -74,6 +78,7 @@ impl Api {
                 cuMemcpyDtoH: sym!("cuMemcpyDtoH_v2"),
                 cuLaunchKernel: sym!("cuLaunchKernel"),
                 cuCtxSynchronize: sym!("cuCtxSynchronize"),
+                cuCtxSetLimit: sym!("cuCtxSetLimit"),
                 cuGetErrorString: sym!("cuGetErrorString"),
                 _lib: lib,
             })
@@ -102,8 +107,13 @@ pub struct Gpu {
     api: Api,
     ctx: *mut c_void,
     filter: *mut c_void,
+    filter_bio: *mut c_void,
     crack: *mut c_void,
+    biomes: *mut c_void,
     prog: Ptr,
+    clim: Ptr,
+    /// Whether the per-thread stack was raised for climate programs (a context-wide setting).
+    deep_stack: Mutex<bool>,
     bufs: Mutex<Bufs>,
     /// Device name and compute capability.
     pub name: String,
@@ -155,14 +165,20 @@ impl Gpu {
             api.ok((api.cuCtxSetCurrent)(ctx), "context")?;
             let mut module = std::ptr::null_mut();
             api.ok((api.cuModuleLoadData)(&mut module, ptx.as_ptr() as *const c_void), "loading kernels")?;
-            let (mut filter, mut crack) = (std::ptr::null_mut(), std::ptr::null_mut());
-            api.ok((api.cuModuleGetFunction)(&mut filter, module, c"filter".as_ptr()), "filter kernel")?;
-            api.ok((api.cuModuleGetFunction)(&mut crack, module, c"crack".as_ptr()), "crack kernel")?;
-            let (mut prog, mut size) = (0, 0);
+            let kernel = |name: &CStr| {
+                let mut f = std::ptr::null_mut();
+                api.ok((api.cuModuleGetFunction)(&mut f, module, name.as_ptr()), &format!("{} kernel", name.to_string_lossy())).map(|_| f)
+            };
+            let (filter, filter_bio, crack, biomes) = (kernel(c"filter")?, kernel(c"filter_bio")?, kernel(c"crack")?, kernel(c"biomes")?);
+            let (mut prog, mut clim, mut size) = (0, 0, 0);
             api.ok((api.cuModuleGetGlobal)(&mut prog, &mut size, module, c"PROG".as_ptr()), "PROG")?;
+            api.ok((api.cuModuleGetGlobal)(&mut clim, &mut size, module, c"CLIM".as_ptr()), "CLIM")?;
+            if size != std::mem::size_of::<ClimC>() {
+                return Err(format!("CLIM is {size} bytes on the device, {} on the host", std::mem::size_of::<ClimC>()));
+            }
             let mut count = 0;
             api.ok((api.cuMemAlloc)(&mut count, 4), "cuMemAlloc")?;
-            Ok(Gpu { api, ctx, filter, crack, prog, bufs: Mutex::new(Bufs { out: 0, out_bytes: 0, count }), name })
+            Ok(Gpu { api, ctx, filter, filter_bio, crack, biomes, prog, clim, deep_stack: Mutex::new(false), bufs: Mutex::new(Bufs { out: 0, out_bytes: 0, count }), name })
         }
     }
 
@@ -195,21 +211,95 @@ impl Gpu {
         Ok(count)
     }
 
+    /// Uploads a World's climate program (gpu.cu `Clim`); kept on the device until dropped.
+    pub fn upload_climate(self: &Arc<Self>, p: &ClimateProgram) -> Result<ClimDev, String> {
+        let _b = self.bufs.lock().unwrap();
+        let mut d = ClimDev { gpu: self.clone(), bufs: vec![], c: ClimC::default() };
+        // SAFETY: each buffer is allocated for exactly the slice it receives.
+        unsafe {
+            self.api.ok((self.api.cuCtxSetCurrent)(self.ctx), "context")?;
+            d.c.node = d.upload(&p.nodes)?;
+            d.c.k = d.upload(&p.k)?;
+            d.c.aux = d.upload(&p.aux)?;
+            d.c.spl = d.upload(&p.splines)?;
+            d.c.roots = p.roots;
+            d.c.noise = d.upload(&p.noise)?;
+            d.c.noise_md5 = d.upload(&p.noise_md5)?;
+            d.c.nnoise = (p.noise.len() / 2) as i32;
+            d.c.layer_md5 = d.upload(&p.layer_md5)?;
+            d.c.layer_freq = d.upload(&p.layer_freq)?;
+            d.c.layer_amp = d.upload(&p.layer_amp)?;
+            d.c.layer_second = d.upload(&p.layer_second)?;
+            d.c.nlayer = p.layer_freq.len() as i32;
+            d.c.tree = d.upload(&p.tree)?;
+            d.c.kids = d.upload(&p.kids)?;
+            d.c.space = d.upload(&p.spaces)?;
+            d.c.leaf_biome = d.upload(&p.leaf_biome)?;
+        }
+        Ok(d)
+    }
+
+    /// Makes `clim` the climate the kernels read, and gives threads the stack its recursion needs.
+    /// Caller holds the lock.
+    unsafe fn use_climate(&self, clim: &ClimDev) -> Result<(), String> {
+        let a = &self.api;
+        let mut deep = self.deep_stack.lock().unwrap();
+        if !*deep {
+            // ~14 KB of climate state per thread plus the sampler recursion (see gpu.cu `Cl`)
+            a.ok((a.cuCtxSetLimit)(0, 32 << 10), "stack for biome checks (not enough GPU memory?)")?;
+            *deep = true;
+        }
+        a.ok((a.cuMemcpyHtoD)(self.clim, &clim.c as *const ClimC as *const c_void, std::mem::size_of::<ClimC>()), "climate upload")
+    }
+
+    /// Seeded::biome with a fresh context for each (seed, quart x, y, z); -1 where a tie makes the
+    /// GPU unsure. For parity tests.
+    pub fn biomes(&self, clim: &ClimDev, seeds: &[i64], quarts: &[[i32; 3]]) -> Result<Vec<i32>, String> {
+        let mut b = self.bufs.lock().unwrap();
+        let n = seeds.len();
+        // SAFETY: buffers sized for n entries; argument pointers live until the synchronous launch returns.
+        unsafe {
+            self.prepare(&mut b, &[0], n * 4)?;
+            self.use_climate(clim)?;
+            let a = &self.api;
+            let (mut sd, mut pd) = (0, 0);
+            a.ok((a.cuMemAlloc)(&mut sd, n.max(1) * 8), "cuMemAlloc")?;
+            a.ok((a.cuMemAlloc)(&mut pd, n.max(1) * 12), "cuMemAlloc")?;
+            let res = (|| {
+                a.ok((a.cuMemcpyHtoD)(sd, seeds.as_ptr() as *const c_void, n * 8), "seeds")?;
+                a.ok((a.cuMemcpyHtoD)(pd, quarts.as_ptr() as *const c_void, n * 12), "positions")?;
+                let (mut s, mut p, mut nn, mut out) = (sd, pd, n as u64, b.out);
+                let mut args: [*mut c_void; 4] = [&mut s as *mut _ as _, &mut p as *mut _ as _, &mut nn as *mut _ as _, &mut out as *mut _ as _];
+                self.launch(&b, self.biomes, n as u64, &mut args)?;
+                let mut v = vec![0i32; n];
+                a.ok((a.cuMemcpyDtoH)(v.as_mut_ptr() as *mut c_void, b.out, n * 4), "results")?;
+                Ok(v)
+            })();
+            (a.cuMemFree)(sd);
+            (a.cuMemFree)(pd);
+            res
+        }
+    }
+
     /// Offsets in [0, n) of the search units lo..lo+n passing the program (sorted). `mode`: 0 range
     /// (seed = base + unit), 1 structure seeds, 2 random (seed = splitmix(base + unit)). `shuffle`:
-    /// (total units, key) as in search.rs `permute`.
-    pub fn filter(&self, prog: &[i32], mode: i32, base: u64, lo: u64, n: u64, shuffle: Option<(u64, u64)>) -> Result<Vec<u32>, String> {
+    /// (total units, key) as in search.rs `permute`. Programs with biome atoms need `clim`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn filter(&self, prog: &[i32], clim: Option<&ClimDev>, mode: i32, base: u64, lo: u64, n: u64, shuffle: Option<(u64, u64)>) -> Result<Vec<u32>, String> {
         let mut b = self.bufs.lock().unwrap();
         let (mut total, mut key) = shuffle.unwrap_or((0, 0));
         // SAFETY: argument pointers live until the synchronous launch returns; buffers hold n entries.
         unsafe {
             self.prepare(&mut b, prog, n as usize * 4)?;
+            if let Some(c) = clim {
+                self.use_climate(c)?;
+            }
             let (mut lo, mut base, mut n, mut mode, mut out, mut count, mut cap) = (lo, base, n, mode, b.out, b.count, n as u32);
             let mut args: [*mut c_void; 9] = [
                 &mut lo as *mut _ as _, &mut n as *mut _ as _, &mut mode as *mut _ as _, &mut base as *mut _ as _,
                 &mut total as *mut _ as _, &mut key as *mut _ as _, &mut out as *mut _ as _, &mut count as *mut _ as _, &mut cap as *mut _ as _,
             ];
-            let k = self.launch(&b, self.filter, n, &mut args)?.min(cap) as usize;
+            let k = self.launch(&b, if clim.is_some() { self.filter_bio } else { self.filter }, n, &mut args)?.min(cap) as usize;
             let mut v = vec![0u32; k];
             self.api.ok((self.api.cuMemcpyDtoH)(v.as_mut_ptr() as *mut c_void, b.out, k * 4), "results")?;
             v.sort_unstable();
@@ -265,6 +355,402 @@ impl Gpu {
 pub fn next_batch(batch: u64, started: Instant, max: u64) -> u64 {
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     if ms < 25.0 { (batch * 2).min(max) } else if ms > 100.0 { (batch / 2).max(1024) } else { batch }
+}
+
+/// gpu.cu `Clim`: device pointers to a ClimateProgram's arrays.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ClimC {
+    node: Ptr,
+    k: Ptr,
+    aux: Ptr,
+    spl: Ptr,
+    roots: [i32; 6],
+    ydep: u32,
+    noise: Ptr,
+    noise_md5: Ptr,
+    nnoise: i32,
+    layer_md5: Ptr,
+    layer_freq: Ptr,
+    layer_amp: Ptr,
+    layer_second: Ptr,
+    nlayer: i32,
+    tree: Ptr,
+    kids: Ptr,
+    space: Ptr,
+    leaf_biome: Ptr,
+}
+
+/// A climate program on the device (freed on drop).
+pub struct ClimDev {
+    gpu: Arc<Gpu>,
+    bufs: Vec<Ptr>,
+    c: ClimC,
+}
+
+// SAFETY: device pointers only; every use goes through the Gpu lock.
+unsafe impl Send for ClimDev {}
+unsafe impl Sync for ClimDev {}
+
+impl ClimDev {
+    unsafe fn upload<T: Copy>(&mut self, v: &[T]) -> Result<Ptr, String> {
+        let a = &self.gpu.api;
+        let bytes = std::mem::size_of_val(v).max(8);
+        let mut p = 0;
+        a.ok((a.cuMemAlloc)(&mut p, bytes), "cuMemAlloc")?;
+        self.bufs.push(p);
+        a.ok((a.cuMemcpyHtoD)(p, v.as_ptr() as *const c_void, std::mem::size_of_val(v)), "climate upload")?;
+        Ok(p)
+    }
+}
+
+impl Drop for ClimDev {
+    fn drop(&mut self) {
+        let _b = self.gpu.bufs.lock().unwrap();
+        for &p in &self.bufs {
+            // SAFETY: allocated by `upload` and not used after the owner drops.
+            unsafe { (self.gpu.api.cuMemFree)(p) };
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Climate: the compiled climate samplers, their noises and the biome R-tree, flattened for gpu.cu
+// ------------------------------------------------------------------------------------------------
+
+/// Ints per sampler node: [op, a, b, c, i0..i5, k0..k3] (a/b/c child nodes, k = constant indices).
+pub const NODE: usize = 14;
+/// Ints per spline node: [0, constant] or [1, coord, points, first location, first derivative, first value].
+pub const SPL: usize = 6;
+/// Memo slots (cache nodes) and noise layers the device keeps per thread (gpu.cu has the same).
+pub const MAX_CACHES: usize = 32;
+pub const MAX_LAYERS: usize = 64;
+
+/// gpu.cu `Clim`, host side. Built once per World from seed 0's samplers (their shape does not
+/// depend on the seed; only the noises do, and the device creates those per seed).
+#[derive(Default)]
+pub struct ClimateProgram {
+    pub nodes: Vec<i32>,
+    pub k: Vec<f64>,
+    pub aux: Vec<i32>,
+    pub splines: Vec<i32>,
+    pub roots: [i32; 6],
+    pub caches: i32,
+    /// Per noise: first layer and layer count; its id hash is in `noise_md5` (lo, hi).
+    pub noise: Vec<i32>,
+    pub noise_md5: Vec<u64>,
+    /// Per layer: octave name hash (lo, hi), frequency, amplitude, and which fork (0 first, 1 second).
+    pub layer_md5: Vec<u64>,
+    pub layer_freq: Vec<f64>,
+    pub layer_amp: Vec<f32>,
+    pub layer_second: Vec<i32>,
+    /// R-tree (see `Climate::flat`), root = node 0.
+    pub tree: Vec<i32>,
+    pub kids: Vec<i32>,
+    pub spaces: Vec<i64>,
+    pub leaf_biome: Vec<i32>,
+}
+
+struct Enc<'a> {
+    p: ClimateProgram,
+    noise_ids: HashMap<*const NoiseStack, i32>,
+    names: &'a HashMap<String, Arc<NoiseStack>>,
+    params: &'a HashMap<String, NormalNoise>,
+    slots: HashMap<usize, i32>,
+    shared: HashMap<*const S, (i32, bool)>,
+}
+
+impl Enc<'_> {
+    fn k(&mut self, v: f64) -> i32 {
+        self.p.k.push(v);
+        (self.p.k.len() - 1) as i32
+    }
+
+    fn noise(&mut self, n: &Arc<NoiseStack>) -> Result<i32, String> {
+        let key = Arc::as_ptr(n);
+        if let Some(&i) = self.noise_ids.get(&key) {
+            return Ok(i);
+        }
+        let name = self.names.iter().find(|(_, v)| Arc::ptr_eq(v, n)).map(|(k, _)| k.clone()).ok_or("noise not created by the compiler")?;
+        let params = &self.params[&name];
+        let first = self.p.layer_freq.len() as i32;
+        for (h, freq, amp) in params.octave_layers() {
+            for (second, f) in [(0, freq), (1, freq * 1.0181268882175227)] {
+                self.p.layer_md5.extend([h.md5().0, h.md5().1]);
+                self.p.layer_freq.push(f);
+                self.p.layer_amp.push(amp);
+                self.p.layer_second.push(second);
+            }
+        }
+        if self.p.layer_freq.len() > MAX_LAYERS {
+            return Err(format!("climate noises have more than {MAX_LAYERS} layers"));
+        }
+        let i = (self.p.noise.len() / 2) as i32;
+        self.p.noise.extend([first, self.p.layer_freq.len() as i32 - first]);
+        self.p.noise_md5.extend([params.id.md5().0, params.id.md5().1]);
+        self.noise_ids.insert(key, i);
+        Ok(i)
+    }
+
+    fn spline(&mut self, sp: &CSpline) -> i32 {
+        let id = (self.p.splines.len() / SPL) as i32;
+        match sp {
+            CSpline::Const(v) => {
+                let k = self.k(*v as f64);
+                self.p.splines.extend([0, k, 0, 0, 0, 0]);
+            }
+            CSpline::Multi { coord, loc, val, der } => {
+                self.p.splines.extend([1, *coord as i32, loc.len() as i32, 0, 0, 0]);
+                let lk = self.p.k.len() as i32;
+                self.p.k.extend(loc.iter().map(|&v| v as f64));
+                let dk = self.p.k.len() as i32;
+                self.p.k.extend(der.iter().map(|&v| v as f64));
+                let kids: Vec<i32> = val.iter().map(|v| self.spline(v)).collect();
+                let va = self.p.aux.len() as i32;
+                self.p.aux.extend(kids);
+                let at = id as usize * SPL;
+                self.p.splines[at + 3..at + 6].copy_from_slice(&[lk, dk, va]);
+            }
+        }
+        id
+    }
+
+    /// Encodes children into n[1..], returns whether any depends on y.
+    fn kids(&mut self, n: &mut [i32; NODE], list: &[&S]) -> Result<bool, String> {
+        let mut y = false;
+        for (i, c) in list.iter().enumerate() {
+            let (id, cy) = self.node(c)?;
+            n[1 + i] = id;
+            y |= cy;
+        }
+        Ok(y)
+    }
+
+    /// Node id of `s` and whether its value depends on y.
+    fn node(&mut self, s: &S) -> Result<(i32, bool), String> {
+        let mut n = [0i32; NODE];
+        let ydep = match s {
+            S::Const(v) => {
+                n[10] = self.k(*v as f64);
+                false
+            }
+            S::Noise(nz, xz, ys) => {
+                n[0] = 1;
+                n[4] = self.noise(nz)?;
+                n[10] = self.k(*xz);
+                n[11] = self.k(*ys);
+                *ys != 0.0
+            }
+            S::ShiftedXz(sx, sz, nz, xz, ys) => {
+                let y = self.kids(&mut n, &[sx, sz])?;
+                n[0] = 2;
+                n[4] = self.noise(nz)?;
+                n[10] = self.k(*xz);
+                n[11] = self.k(*ys);
+                y || *ys != 0.0
+            }
+            S::ShiftedXyz(sx, sy, sz, nz, xz, ys) => {
+                let y = self.kids(&mut n, &[sx, sy, sz])?;
+                n[0] = 3;
+                n[4] = self.noise(nz)?;
+                n[10] = self.k(*xz);
+                n[11] = self.k(*ys);
+                y || *ys != 0.0
+            }
+            S::ShiftB(nz) => {
+                n[0] = 4;
+                n[4] = self.noise(nz)?;
+                false
+            }
+            S::ConstAdd(l, c) | S::ConstMul(l, c) | S::ConstMin(l, c) | S::ConstMax(l, c) => {
+                let y = self.kids(&mut n, &[l])?;
+                n[0] = match s {
+                    S::ConstAdd(..) => 5,
+                    S::ConstMul(..) => 7,
+                    S::ConstMin(..) => 9,
+                    _ => 10,
+                };
+                n[10] = self.k(*c as f64);
+                y
+            }
+            S::ConstSub(c, r) | S::ConstDiv(c, r) => {
+                let y = self.kids(&mut n, &[r])?;
+                n[0] = if matches!(s, S::ConstSub(..)) { 6 } else { 8 };
+                n[10] = self.k(*c as f64);
+                y
+            }
+            S::Add(l, r) | S::Sub(l, r) | S::Mul(l, r) | S::Div(l, r) => {
+                let y = self.kids(&mut n, &[l, r])?;
+                n[0] = match s {
+                    S::Add(..) => 11,
+                    S::Sub(..) => 12,
+                    S::Mul(..) => 13,
+                    _ => 14,
+                };
+                y
+            }
+            S::Min(l, r, b) | S::Max(l, r, b) => {
+                let y = self.kids(&mut n, &[l, r])?;
+                n[0] = if matches!(s, S::Min(..)) { 15 } else { 16 };
+                n[10] = self.k(*b as f64);
+                y
+            }
+            S::Grad { axis, tiling, from, lo, hi, range, fv, factor } => {
+                n[..10].copy_from_slice(&[17, 0, 0, 0, *axis as i32, *tiling as i32, *from, *lo, *hi, *range]);
+                n[10] = self.k(*fv as f64);
+                n[11] = self.k(*factor as f64);
+                *axis == 2
+            }
+            S::Unary(op, i) => {
+                let y = self.kids(&mut n, &[i])?;
+                n[0] = 18;
+                n[4] = *op as i32;
+                y
+            }
+            S::Clamp(i, lo, hi) => {
+                let y = self.kids(&mut n, &[i])?;
+                n[0] = 19;
+                n[10] = self.k(*lo as f64);
+                n[11] = self.k(*hi as f64);
+                y
+            }
+            S::Lerp(a, f, t) => {
+                let y = self.kids(&mut n, &[a, f, t])?;
+                n[0] = 20;
+                y
+            }
+            S::LerpCF(a, f, t) => {
+                let y = self.kids(&mut n, &[a, t])?;
+                n[0] = 21;
+                n[10] = self.k(*f as f64);
+                y
+            }
+            S::LerpCS(a, f, t) => {
+                let y = self.kids(&mut n, &[a, f])?;
+                n[0] = 22;
+                n[10] = self.k(*t as f64);
+                y
+            }
+            S::RangeConst(i, lo, hi, x, z) => {
+                let y = self.kids(&mut n, &[i])?;
+                n[0] = 23;
+                for (j, v) in [lo, hi, x, z].into_iter().enumerate() {
+                    n[10 + j] = self.k(*v as f64);
+                }
+                y
+            }
+            S::Range(i, lo, hi, a, b) => {
+                let y = self.kids(&mut n, &[i, a, b])?;
+                n[0] = 24;
+                n[10] = self.k(*lo as f64);
+                n[11] = self.k(*hi as f64);
+                y
+            }
+            S::Sel1(i, t, lo, hi) => {
+                let y = self.kids(&mut n, &[i, lo, hi])?;
+                n[0] = 25;
+                n[10] = self.k(*t as f64);
+                y
+            }
+            S::Sel(i, ts, fs) => {
+                let mut y = self.kids(&mut n, &[i])?;
+                let mut ids = vec![];
+                for f in fs {
+                    let (id, fy) = self.node(f)?;
+                    ids.push(id);
+                    y |= fy;
+                }
+                n[0] = 26;
+                n[4] = self.p.aux.len() as i32;
+                n[5] = ids.len() as i32;
+                self.p.aux.extend(ids);
+                n[6] = self.p.k.len() as i32;
+                n[7] = ts.len() as i32;
+                self.p.k.extend(ts.iter().map(|&t| t as f64));
+                y
+            }
+            S::Spline(sp, coords) => {
+                let mut y = false;
+                let mut ids = vec![];
+                for c in coords {
+                    let (id, cy) = self.node(c)?;
+                    ids.push(id);
+                    y |= cy;
+                }
+                n[0] = 27;
+                n[4] = self.spline(sp);
+                n[5] = self.p.aux.len() as i32;
+                n[6] = ids.len() as i32;
+                self.p.aux.extend(ids);
+                y
+            }
+            S::Cache(id, i) => {
+                let (inner, y) = self.shared_node(i)?;
+                let next = self.slots.len() as i32;
+                let slot = *self.slots.entry(*id).or_insert(next);
+                if slot as usize >= MAX_CACHES {
+                    return Err(format!("climate samplers have more than {MAX_CACHES} caches"));
+                }
+                n[..6].copy_from_slice(&[28, inner, 0, 0, slot, y as i32]);
+                y
+            }
+            S::Shared(i) => return self.shared_node(i),
+            S::SliceX(i, c) | S::SliceZ(i, c) => {
+                let y = self.kids(&mut n, &[i])?;
+                n[0] = if matches!(s, S::SliceX(..)) { 29 } else { 31 };
+                n[4] = *c;
+                y
+            }
+            S::SliceY(i, c) => {
+                self.kids(&mut n, &[i])?;
+                n[0] = 30;
+                n[4] = *c;
+                false
+            }
+            S::SliceXz(i, cx, cz) => {
+                let y = self.kids(&mut n, &[i])?;
+                n[0] = 32;
+                n[4] = *cx;
+                n[5] = *cz;
+                y
+            }
+            S::Interp(..) | S::FindTop(..) => return Err("climate samplers use volume-only functions".into()),
+        };
+        self.p.nodes.extend(n);
+        Ok(((self.p.nodes.len() / NODE - 1) as i32, ydep))
+    }
+
+    /// Arc'd subtrees (caches shared between climate parameters) are encoded once.
+    fn shared_node(&mut self, s: &Arc<S>) -> Result<(i32, bool), String> {
+        let key = Arc::as_ptr(s);
+        if let Some(&r) = self.shared.get(&key) {
+            return Ok(r);
+        }
+        let r = self.node(s)?;
+        self.shared.insert(key, r);
+        Ok(r)
+    }
+}
+
+impl ClimateProgram {
+    pub fn new(w: &World) -> Result<ClimateProgram, String> {
+        let seeded = crate::world::Seeded::new(w, 0);
+        if !seeded.xoroshiro() {
+            return Err("legacy (JavaRandom) worlds are not ported to the GPU".into());
+        }
+        let (roots, comp) = seeded.climate_samplers();
+        let mut e = Enc { p: ClimateProgram::default(), noise_ids: HashMap::new(), names: comp.noises(), params: comp.noise_params, slots: HashMap::new(), shared: HashMap::new() };
+        for (i, r) in roots.iter().enumerate() {
+            e.p.roots[i] = e.shared_node(r)?.0;
+        }
+        e.p.caches = e.slots.len() as i32;
+        let (tree, kids, spaces, biomes) = w.climate.flat();
+        e.p.tree = tree.into_iter().flatten().collect();
+        e.p.kids = kids;
+        e.p.spaces = spaces;
+        e.p.leaf_biome = biomes.into_iter().map(i32::from).collect();
+        Ok(e.p)
+    }
 }
 
 // ------------------------------------------------------------------------------------------------

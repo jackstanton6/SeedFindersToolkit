@@ -940,6 +940,11 @@ impl<'a> Compiler<'a> {
         Self { defs, noise_params, random, noises: HashMap::new(), prepared: HashMap::new(), caches, compiled: vec![] }
     }
 
+    /// Noises created so far, by registry name.
+    pub fn noises(&self) -> &HashMap<String, Arc<NoiseStack>> {
+        &self.noises
+    }
+
     /// RandomState.getOrCreateNoise: the noise's random is fromHashOf(its id).
     pub fn noise(&mut self, name: &str) -> Arc<NoiseStack> {
         if let Some(n) = self.noises.get(name) {
