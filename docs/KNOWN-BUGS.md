@@ -29,8 +29,5 @@ None open. The nine bugs from the review were reproduced with a test each and fi
 - `height`, `climate`, `biome_at` and `loot` hold the GIL (`check` releases it now).
 - `near`, `chain` and `overlap` use fixed slack (128 and 384 blocks) where `cluster` uses the
   per-structure `Structures::reach`.
-- `data/`, `plugins/` and the docs are found relative to the package parent, so only an editable
-  install (`pip install -e .`) works.
 - The block editor finds valid structure names by calling `World.attempts` and catching errors,
   which computes stronghold rings at startup; a `resolve` binding would do.
-- No CI. `tests/test_engine.py` covers the search runner now, but needs `data/26.3`.

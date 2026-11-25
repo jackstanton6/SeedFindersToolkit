@@ -11,6 +11,9 @@ import sft  # noqa: E402
 from sft import query  # noqa: E402
 
 SEED = 12345
+if not (sft.data.data_dir("26.3") / "version.txt").exists():
+    print("skipped: needs data/26.3 (run `python -m sft data 26.3`)")
+    sys.exit(0)
 w = sft.world("26.3")
 
 

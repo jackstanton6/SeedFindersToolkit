@@ -1,5 +1,6 @@
-"""GUI checks, offscreen (needs data/26.3): blocks <-> text keep every query, every palette block and
-wizard goal builds a valid query, drag and drop moves blocks. Run: python tests/test_gui.py"""
+"""GUI checks, offscreen: blocks <-> text keep every query, every palette block and wizard goal builds
+a valid query, drag and drop moves blocks, seed bits. Parts that search need data/26.3 and are
+skipped without it (CI). Run: python tests/test_gui.py"""
 import json
 import os
 import sys
@@ -10,14 +11,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtCore import QByteArray, QMimeData, QPointF, QSettings, Qt  # noqa: E402
 from PySide6.QtGui import QDropEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tempfile.mkdtemp())  # keep the real settings untouched
 app = QApplication(sys.argv)
-from sft import query  # noqa: E402
+QMessageBox.warning = QMessageBox.information = staticmethod(lambda *a, **k: None)  # a modal box would wait forever offscreen
+from sft import data, query  # noqa: E402
 from sft.gui import blocks, seedbits, wizard  # noqa: E402
 from sft.gui.app import Main  # noqa: E402
+
+HAS_DATA = (data.data_dir("26.3") / "version.txt").exists()
 
 
 def drop(body, node, dragging=None, y=10_000):
@@ -76,6 +80,9 @@ def main():
     w.results.selectRow(0)
     tinted = [w.results.item(r, 0).background().style() != Qt.BrushStyle.NoBrush for r in range(3)]
     assert sorted(tinted) == [False, True, True], tinted
+    if not HAS_DATA:
+        print("ok (search parts skipped: no data/26.3; run `python -m sft data 26.3`)")
+        return
     next(b for b in sb.findChildren(QPushButton) if b.text() == "search sisters").click()
     assert w.mode.currentText().startswith("upper 16") and int(w.fixed.text()) == low and w.hi.text() == "65535"
 

@@ -1,0 +1,48 @@
+# Data-free checks: no Mojang data, oracle or GPU on the runners, so the parity suites
+# (cargo test -- --ignored) and the search parts of the Python tests stay local.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Qt libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - name: Qt fonts (Windows offscreen)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "QT_QPA_FONTDIR=C:/Windows/Fonts" >> "$GITHUB_ENV"
+      - name: Engine unit tests (no CUDA)
+        working-directory: engine
+        run: cargo test --release
+      - name: Install
+        run: pip install -e .
+      - name: Python tests
+        shell: bash
+        run: |
+          python tests/test_query.py
+          python tests/test_gui.py
+          python tests/test_engine.py
+      - name: CLI starts
+        run: |
+          python -m sft --help
+          python -m sft plugins

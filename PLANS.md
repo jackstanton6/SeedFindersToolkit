@@ -274,7 +274,7 @@ all test files pass before the last commit.
 - [x] 8. `island()` details carry their condition, so two island conditions both show.
 - [x] 9. `query._literal` turns any literal error into a `QueryError`; the example markdown exporter
   handles details without a `name`.
-- [ ] CI (GitHub Actions, Windows + Linux): `cargo test`, build without CUDA, pip install,
+- [x] CI (GitHub Actions, Windows + Linux): `cargo test`, build without CUDA, pip install,
   `test_query.py`, `test_gui.py` offscreen. Tests that need `data/26.3` skip with a message.
 - [x] Non-editable install: data and plugins default to a per-user folder (`%APPDATA%/sft`,
   `~/.local/share/sft`), `SFT_HOME` overrides it, an editable checkout keeps the repo folders; docs

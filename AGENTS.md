@@ -58,6 +58,10 @@ cd engine && cargo test --release --test gpu -- --ignored   # GPU parity (CUDA d
 python -m sft                                      # GUI
 ```
 
+CI (`.github/workflows/ci.yml`, Windows + Linux) runs only what needs no Mojang data or GPU: `cargo
+test`, the Python tests (their search parts skip without `data/26.3`) and a CLI start. The parity
+suites stay local.
+
 After any engine change, run the parity suite. A change that makes it fail is wrong, even if the
 new behaviour "looks" better.
 
