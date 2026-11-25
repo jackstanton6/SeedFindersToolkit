@@ -41,8 +41,7 @@ def run_job(job, a):
         while job.running():
             time.sleep(0.5)
             for note in job.take_notes():
-                print("
-" + note, file=sys.stderr)
+                print("\n" + note, file=sys.stderr)
             for seed, details in job.poll():
                 print(seed, json.dumps(details) if a.details else "", flush=True)
             s = job.stats()
@@ -52,8 +51,7 @@ def run_job(job, a):
         job.stop()
     resume = job.join()
     for note in job.take_notes():
-        print("
-" + note, file=sys.stderr)
+        print("\n" + note, file=sys.stderr)
     if job.stats()["error"]:
         print("\n" + job.stats()["error"], file=sys.stderr)
     for seed, details in job.poll():
