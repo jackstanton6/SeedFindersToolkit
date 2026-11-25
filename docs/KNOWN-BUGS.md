@@ -1,14 +1,10 @@
 # Known bugs and open follow-ups
 
-Found in the 2026-11-12 code review and **not fixed yet**. The bugs were found by reading the code
-and have not been reproduced; check each one before fixing it. Remove an entry when it is fixed.
+Found in the 2026-11-12 code review and **not done yet**. Remove an entry when it is done.
 
 ## Bugs
 
-9. **Small robustness gaps.** `query._literal` only catches `ValueError`, so input such as
-   `village(within={[]: 1})` escapes as a `TypeError` instead of a `QueryError`; the example
-   plugin's markdown exporter raises `KeyError` on details without a `name` (anchors, islands,
-   chests).
+None open. The nine bugs from the review were reproduced with a test each and fixed (2026-11-26).
 
 ## Performance (measured or estimated, not done)
 

@@ -27,12 +27,23 @@ def test_round_trip():
 def test_shorthand_and_errors():
     assert parse("village") == {"op": "structure", "name": "village"}
     assert parse("stronghold(within=1500)") == {"op": "structure", "name": "stronghold", "within": 1500}
-    for bad in ["village(within=x)", "1 + 2", "near('a', 'b', 'c')", "village(within="]:
+    for bad in ["village(within=x)", "1 + 2", "near('a', 'b', 'c')", "village(within=", "village(within={[]: 1})", "village(within={1, ()} - {[]})"]:
         try:
             parse(bad)
         except QueryError:
             continue
         raise AssertionError(f"accepted: {bad}")
+
+
+def test_example_markdown_exporter_takes_any_detail():
+    import importlib.util
+    import tempfile
+    spec = importlib.util.spec_from_file_location("example_python", Path(__file__).resolve().parent.parent / "plugins/example_python/plugin.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    out = Path(tempfile.mkdtemp()) / "r.md"
+    mod.export_markdown([(1, [{"type": "island", "x": 5, "z": 6, "area": 9.0}, {"type": "anchor", "x": 1, "z": 2}, {"name": "minecraft:village", "x": 3, "z": 4}])], out)
+    assert "island (5, 6)" in out.read_text() and "village (3, 4)" in out.read_text(), out.read_text()
 
 
 def test_comparisons():
@@ -66,4 +77,5 @@ if __name__ == "__main__":
     test_shorthand_and_errors()
     test_comparisons()
     test_split_python()
+    test_example_markdown_exporter_takes_any_detail()
     print("ok")

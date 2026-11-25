@@ -43,7 +43,7 @@ class QueryError(ValueError):
 def _literal(node: ast.AST):
     try:
         v = ast.literal_eval(node)
-    except ValueError as e:
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError) as e:  # e.g. {[]: 1} is a TypeError
         raise QueryError(f"only literals are allowed as arguments: {ast.unparse(node)}") from e
     return list(v) if isinstance(v, tuple) else v
 

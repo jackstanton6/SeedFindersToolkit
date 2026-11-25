@@ -30,7 +30,7 @@ def text_seeds():
 
 def export_markdown(rows, path):
     lines = ["| seed | matches |", "|---|---|"]
-    lines += [f"| {seed} | " + ", ".join(f"{d['name'].split(':')[-1]} ({d['x']}, {d['z']})" for d in details if "x" in d) + " |"
+    lines += [f"| {seed} | " + ", ".join(f"{d.get('name', d.get('type', '?')).split(':')[-1]} ({d['x']}, {d['z']})" for d in details if "x" in d) + " |"
               for seed, details in rows]
     Path(path).write_text("\n".join(lines) + "\n")
 
