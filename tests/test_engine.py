@@ -140,6 +140,25 @@ def test_crack_runs_as_a_job():
     assert 0 < s["units_done"] < s["units_total"] and s["progress"] < 1 and job.found is None, s
 
 
+def test_loot_without_tables_is_refused():
+    import shutil
+    import tempfile
+    d = Path(tempfile.mkdtemp()) / "26.3"
+    shutil.copytree(sft.data.data_dir("26.3"), d, ignore=lambda src, names: ["loot_table"] if "loot_table" in names else [])
+    try:
+        bare = sft.engine().World(str(d))
+        q = json.dumps(query.parse('loot("buried_treasure", "diamond", within=400)'))
+        try:
+            bare.check(SEED, q)
+        except ValueError as e:
+            assert "python -m sft data 26.3" in str(e), e
+        else:
+            raise AssertionError("a loot query ran without loot tables")
+        assert bare.check(SEED, json.dumps(query.parse("village(within=3000)"))) is not None  # the rest still works
+    finally:
+        shutil.rmtree(d.parent)
+
+
 if __name__ == "__main__":
     test_mistakes_are_refused_with_a_hint()
     test_failed_branches_leave_nothing_behind()
@@ -147,4 +166,5 @@ if __name__ == "__main__":
     test_max_results_is_a_total_and_resume_keeps_the_clock()
     test_a_new_job_resumed_from_a_unit_counts_the_units_before_it()
     test_crack_runs_as_a_job()
+    test_loot_without_tables_is_refused()
     print("ok")

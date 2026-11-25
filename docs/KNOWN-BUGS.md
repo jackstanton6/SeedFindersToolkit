@@ -5,9 +5,6 @@ and have not been reproduced; check each one before fixing it. Remove an entry w
 
 ## Bugs
 
-5. **Loot queries fail silently.** When the loot tables did not load (`World.loot` is `Err`), the
-   `loot` metric returns 0 (`Metric::Loot` in `engine/src/query.rs`) instead of refusing the query,
-   and `Loot::fill` errors are swallowed there and in `PyWorld.chests`.
 6. **`check` and the GUI's re-check ignore plugins.** `PyWorld.parse` passes no native libraries, so
    a query with `native(...)` fails with "native plugin not loaded"; `Main._recheck` and
    `cmd_scan` also drop `py(...)` terms without saying so.

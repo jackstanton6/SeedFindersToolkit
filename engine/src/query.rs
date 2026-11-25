@@ -315,6 +315,9 @@ impl Parser<'_> {
             }
             "slime" => (Metric::Slime { radius: int(v, "radius", 128).max(0), at, within }, 1.0, inf),
             "loot" => {
+                if let Err(e) = &self.w.loot {
+                    return Err(format!("loot tables are not available ({e}); run `python -m sft data {}` again", self.w.version));
+                }
                 let item = crate::density::ns(v["item"].as_str().ok_or("loot needs an item")?);
                 let enchant = v.get("enchant").and_then(Value::as_str).map(crate::density::ns);
                 let m = Metric::Loot { s: self.sel(&v["name"], v)?, item, enchant, at, within: int(v, "within", 1000), total: v["total"].as_bool().unwrap_or(false) };
@@ -1128,14 +1131,15 @@ impl<'w> Eval<'w> {
             Metric::Terrain { kind, at, within, step } => self.terrain(*kind, *at, *within, *step),
             Metric::Slime { radius, at, within } => self.slime_max(*radius, *at, *within) as f64,
             Metric::Loot { s, item, enchant, at, within, total } => {
-                let Ok(loot) = &self.w.loot else { return 0.0 };
+                let loot = self.w.loot.as_ref().expect("parse refuses loot without tables");
                 let (mut best, mut sum) = (0, 0);
                 let mut keep: Vec<(Hit, Vec<Value>)> = vec![]; // what the details show: best structure, or all with `total`
                 for h in self.select(s, *at, *within) {
                     let mut n = 0;
                     let mut found = vec![];
                     for c in &h.chests {
-                        let items: Vec<_> = loot.fill(&c.table, c.seed, None).unwrap_or_default().into_iter().flatten().collect();
+                        // a search turns the panic into an error that stops it (unit and message)
+                        let items: Vec<_> = loot.fill(&c.table, c.seed, None).unwrap_or_else(|e| panic!("loot: {e}")).into_iter().flatten().collect();
                         let k: i32 = items.iter().filter(|st| st.item == *item && enchant.as_ref().is_none_or(|e| st.enchants.iter().any(|(n, _)| n == e))).map(|st| st.count).sum();
                         if k > 0 {
                             found.push(json!({"type": "chest", "x": c.pos.0, "y": c.pos.1, "z": c.pos.2, "table": c.table, "seed": c.seed,

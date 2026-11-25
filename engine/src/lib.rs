@@ -208,18 +208,18 @@ mod py {
             let (set, only) = self.w.structures.resolve(name).ok_or_else(|| err(format!("unknown structure '{name}'")))?;
             let loot = self.w.loot.as_ref().map_err(|e| err(e.clone()))?;
             let world = self.w.clone();
-            Ok(py.detach(move || {
+            py.detach(move || {
                 let mut ev = Eval::new(&world, seed, &[]);
                 let mut out = vec![];
                 for h in ev.instances(set, only, (x, z), radius) {
                     for c in &h.chests {
-                        let items: Vec<Value> = loot.fill(&c.table, c.seed, None).unwrap_or_default().iter().flatten().map(|s| s.to_json()).collect();
+                        let items: Vec<Value> = loot.fill(&c.table, c.seed, None).map_err(err)?.iter().flatten().map(|s| s.to_json()).collect();
                         out.push(serde_json::json!({"structure": world.structures.structures[h.structure].name, "x": c.pos.0, "y": c.pos.1, "z": c.pos.2,
                                                     "table": c.table, "seed": c.seed, "exact": c.exact, "items": items}));
                     }
                 }
-                Value::Array(out).to_string()
-            }))
+                Ok(Value::Array(out).to_string())
+            })
         }
     }
 
