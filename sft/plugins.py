@@ -8,7 +8,7 @@
     native = "target/release/example"     # optional: Rust/C cdylib path, extension omitted
 
 A Python module's register(api) may add query conditions, seed sources, exporters and GUI panels.
-A native library exports `sft_abi_version` and `sft_filter` (see docs/wiki/Plugins.md).
+A native library exports `sft_abi_version` and `sft_filter` (see sft/docs/Plugins.md).
 """
 import importlib.util
 import sys
@@ -17,8 +17,9 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-PLUGIN_DIR = ROOT / "plugins"
+from . import data
+
+PLUGIN_DIR = data.ROOT / "plugins"
 
 
 @dataclass

@@ -26,7 +26,7 @@ world.
 | CUDA pre-filter (structure placement, slime chunks) and crack brute force | done | GPU keeps exactly the CPU pre-check's seeds (2^20 seeds × 11 queries × 3 modes) |
 
 Each "verified" row means an oracle test that runs the actual 26.3 server classes passes with zero
-mismatches. See [docs/wiki/Accuracy.md](docs/wiki/Accuracy.md).
+mismatches. See [sft/docs/Accuracy.md](sft/docs/Accuracy.md).
 
 ## Install (from source: Windows, Linux, macOS)
 
@@ -45,6 +45,11 @@ No Mojang code or data is in this repository. `python -m sft data <version>` dow
 server jar from Mojang (sha1-checked), extracts worldgen JSON, tags and structure templates into
 `data/<version>/`, and runs the vanilla data generator for the biome parameter table.
 
+Where `data/`, `cache/` and `plugins/` live: in the checkout with `pip install -e .`. A normal
+install (`pip install .` or a wheel) uses a per-user folder instead: `%APPDATA%\sft` on Windows,
+`~/Library/Application Support/sft` on macOS, `~/.local/share/sft` on Linux. Set `SFT_HOME` to use
+another folder (for example the checkout, to share its data and example plugins).
+
 ## Quick taste (CLI)
 
 ```sh
@@ -62,14 +67,14 @@ python -m sft crack swamp_hut:-1200,840 desert_pyramid:310,-560 pillager_outpost
 
 ## Documentation
 
-- [Getting started](docs/wiki/Getting-Started.md): the first search, step by step
-- [Wiki home](docs/wiki/Home.md): concepts and workflow
-- [Query language](docs/wiki/Query-Language.md): every condition and parameter
-- [Search modes and performance](docs/wiki/Search-Modes.md)
-- [GUI guide](docs/wiki/GUI.md)
-- [Writing plugins (Rust + Python)](docs/wiki/Plugins.md)
-- [Accuracy and verification](docs/wiki/Accuracy.md)
-- [Adding a Minecraft version](docs/wiki/Versions.md)
+- [Getting started](sft/docs/Getting-Started.md): the first search, step by step
+- [Wiki home](sft/docs/Home.md): concepts and workflow
+- [Query language](sft/docs/Query-Language.md): every condition and parameter
+- [Search modes and performance](sft/docs/Search-Modes.md)
+- [GUI guide](sft/docs/GUI.md)
+- [Writing plugins (Rust + Python)](sft/docs/Plugins.md)
+- [Accuracy and verification](sft/docs/Accuracy.md)
+- [Adding a Minecraft version](sft/docs/Versions.md)
 
 ## Credits and prior art
 

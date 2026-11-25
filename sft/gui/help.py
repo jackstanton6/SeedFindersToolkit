@@ -5,7 +5,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QRectF, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath, QTextCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QPushButton, QSplitter, QTextBrowser, QVBoxLayout, QWidget
 
-DOCS = Path(__file__).resolve().parents[2] / "docs" / "wiki"
+DOCS = Path(__file__).resolve().parent.parent / "docs"  # shipped inside the package
 PAGES = [("Getting started", "Getting-Started.md"), ("Using the window", "GUI.md"), ("Query language", "Query-Language.md"),
          ("Search modes", "Search-Modes.md"), ("Accuracy", "Accuracy.md"), ("Plugins", "Plugins.md"), ("Versions", "Versions.md"),
          ("Overview", "Home.md")]

@@ -11,13 +11,33 @@ Needs Java on PATH for step 3.
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
+import sys
 import urllib.request
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+
+
+def home(repo: Path = Path(__file__).resolve().parent.parent) -> Path:
+    """The folder holding data/, cache/ and plugins/: $SFT_HOME if set, else the source checkout
+    this package runs from (an editable install), else a per-user folder."""
+    if os.environ.get("SFT_HOME"):
+        return Path(os.environ["SFT_HOME"]).expanduser()
+    if (repo / "pyproject.toml").exists():
+        return repo
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "sft"
+
+
+ROOT = home()
 MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 KEEP = ("data/minecraft/worldgen/", "data/minecraft/tags/worldgen/", "data/minecraft/structure/", "data/minecraft/loot_table/",
         "data/minecraft/enchantment/", "data/minecraft/tags/item/", "data/minecraft/tags/enchantment/", "data/minecraft/tags/instrument/")

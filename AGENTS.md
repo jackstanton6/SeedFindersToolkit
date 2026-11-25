@@ -37,7 +37,7 @@ sft/            __init__ (World cache, Job, export), query, plugins, data, __mai
 sft/gui/        app (main window), blocks (block editor + palette), wizard ("I want..."), help (help
                 window + tour), mapview
 plugins/        example_rust (native cdylib), example_python
-docs/wiki/      user documentation
+sft/docs/       user documentation (shipped in the package: the help window shows it)
 ```
 
 ## Commands
@@ -89,7 +89,7 @@ new behaviour "looks" better.
 - New query conditions are metrics: a `Metric` variant in `query.rs` + its `parse` arm (with default
   min/max) + `shift` + `pre` (if a 48-bit pre-check exists) + `value`, a DSL entry in `sft/query.py`
   (`POSITIONAL`), a GUI template in `app.py` `TEMPLATES`, and a section in
-  `docs/wiki/Query-Language.md`.
+  `sft/docs/Query-Language.md`.
 - The native plugin ABI (`SftHost`, `ABI_VERSION`) is a public contract. Append fields only, and
   bump `ABI_VERSION` on any change.
 - Mojang code and data never go into git: `client-refcode/`, `decompiled/`, `data/`, `cache/` and
@@ -111,7 +111,7 @@ new behaviour "looks" better.
 - **GPU batch (done):** CUDA seed-only pre-filter and crack brute force, block query builder and
   wizard, in-app help and tour, jungle temple loot, search progress/estimate fixes.
 - **M4:** carvers and full block-level generation; Nether/End.
-- **Versions:** see docs/wiki/Versions.md.
+- **Versions:** see sft/docs/Versions.md.
 
 ## Decompiled reference
 

@@ -15,7 +15,7 @@ Tiers say what each scenario depends on:
   in `engine/tests/oracle.rs` with zero mismatches.
 - New query conditions follow the AGENTS.md checklist: Rust `Cond` + `parse` + `pre` (when a 48-bit
   pre-check exists) + `eval`, the DSL entry in `sft/query.py`, a GUI template, and a section in
-  `docs/wiki/Query-Language.md`.
+  `sft/docs/Query-Language.md`.
 - An example query in the docs, and one runnable check for any non-trivial logic.
 
 ## Tier 1: six building blocks (Now)
@@ -276,7 +276,7 @@ all test files pass before the last commit.
   handles details without a `name`.
 - [ ] CI (GitHub Actions, Windows + Linux): `cargo test`, build without CUDA, pip install,
   `test_query.py`, `test_gui.py` offscreen. Tests that need `data/26.3` skip with a message.
-- [ ] Non-editable install: data and plugins default to a per-user folder (`%APPDATA%/sft`,
+- [x] Non-editable install: data and plugins default to a per-user folder (`%APPDATA%/sft`,
   `~/.local/share/sft`), `SFT_HOME` overrides it, an editable checkout keeps the repo folders; docs
   ship inside the package.
 

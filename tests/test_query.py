@@ -72,10 +72,29 @@ def test_split_python():
     raise AssertionError("py under 'or' must be rejected")
 
 
+def test_home_folder():
+    import os
+    import tempfile
+    from sft import data
+    old = os.environ.pop("SFT_HOME", None)
+    try:
+        repo = Path(__file__).resolve().parent.parent
+        assert data.home(repo) == repo  # a source checkout keeps its own data/, cache/ and plugins/
+        installed = Path(tempfile.mkdtemp()) / "site-packages"  # an installed package: no pyproject.toml beside it
+        assert data.home(installed).name == "sft" and installed not in data.home(installed).parents
+        os.environ["SFT_HOME"] = str(installed / "elsewhere")
+        assert data.home(repo) == installed / "elsewhere"
+    finally:
+        os.environ.pop("SFT_HOME", None)
+        if old is not None:
+            os.environ["SFT_HOME"] = old
+
+
 if __name__ == "__main__":
     test_round_trip()
     test_shorthand_and_errors()
     test_comparisons()
     test_split_python()
     test_example_markdown_exporter_takes_any_detail()
+    test_home_folder()
     print("ok")

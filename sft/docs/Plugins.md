@@ -1,6 +1,7 @@
 # Writing plugins
 
-A plugin is a folder in `plugins/` with a `plugin.toml`. It can contain Python, a native (Rust/C)
+A plugin is a folder in `plugins/` (in the checkout, or in the per-user folder of a normal install,
+or under `SFT_HOME`) with a `plugin.toml`. It can contain Python, a native (Rust/C)
 library, or both. Drop the folder in and restart; the **plugins** tab (or `python -m sft plugins`)
 shows what loaded and any errors. A broken plugin never takes the app down.
 
