@@ -85,9 +85,20 @@ def test_max_results_is_a_total_and_resume_keeps_the_clock():
     assert job.stats()["units_done"] == 60_000
 
 
+def test_a_new_job_resumed_from_a_unit_counts_the_units_before_it():
+    # the CLI resumes with a new Job (--start-unit): progress must reach 100%, not stop at the resumed part
+    job = sft.Job("26.3", "village(within=300)", "range", 0, 20_000)
+    job.start(4, 15_000)
+    job.join()
+    s = job.stats()
+    assert s["units_done"] == 20_000 and s["progress"] == 1.0 and s["eta"] == 0, s
+    assert s["rarity"]["p"] == s["matched"] / 5_000  # rarity only from the seeds this run checked
+
+
 if __name__ == "__main__":
     test_mistakes_are_refused_with_a_hint()
     test_failed_branches_leave_nothing_behind()
     test_anywhere_moves_the_condition_from_at()
     test_max_results_is_a_total_and_resume_keeps_the_clock()
+    test_a_new_job_resumed_from_a_unit_counts_the_units_before_it()
     print("ok")

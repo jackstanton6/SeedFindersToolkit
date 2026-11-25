@@ -48,7 +48,9 @@ for biome or terrain-driven queries, where every seed needs the full check anywa
 ## Stopping, resuming, max results
 
 Stop at any time. Every unit before the reported resume point is complete; Resume (GUI) or
-`--start-unit N` (CLI) continues from it. `max` stops after that many matches; in the window it
+`--start-unit N` (CLI) continues from it. The window remembers the units other threads had already
+finished past the resume point; a CLI run cannot, so `--start-unit` may print a few seeds again (at
+most one block of up to 256 units per thread). Its progress counts the units before N as done. `max` stops after that many matches; in the window it
 counts every match of the search, resumes included, so Resume after reaching it finds nothing more
 (start a new search with a higher max). With `maximize` or
 `minimize` in the query the search never stops early: it keeps the best `max` seeds (default 100).

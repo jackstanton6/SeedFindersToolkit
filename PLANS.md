@@ -259,7 +259,7 @@ all test files pass before the last commit.
 
 - [x] 0. Seed bits panel (uncommitted): run `test_gui.py`, check a headless screenshot, commit on its own.
 - [x] 1. Estimate then Resume: `Main.estimate` resets `resume_unit` (and the results table).
-- [ ] 2. CLI `--start-unit`: the Job knows its start unit; percent and ETA count only the remaining
+- [x] 2. CLI `--start-unit`: the Job knows its start unit; percent and ETA count only the remaining
   range. Possible duplicates near the resume point (at most a block per thread) are documented.
 - [ ] 3. Crack memory: sisters of cracked structure seeds are expanded and checked in the engine
   (threaded, streamed to results), not as Python lists. Above 1,024 structure seeds, warn with the

@@ -63,12 +63,16 @@ class Job:
         # maximize()/minimize(): rows are the best `keep` seeds by score, best first
         self.ranked, self.keep, self.max_results = self.search.ranked, max_results or 100, max_results
         self.seeds_per_unit = 65536 if mode == "structure_seeds" else 1
+        self.skipped = 0  # units before the first start's from_unit (a CLI resume): done by an earlier run
+        self.started = False
 
     def estimate(self, seconds=3.0, threads=None) -> dict:
         """Runs the search for `seconds` (stop() ends it early) and extrapolates; see rarity()."""
         return json.loads(self.search.estimate(seconds, threads or os.cpu_count()))
 
     def start(self, threads=None, from_unit=0):
+        if not self.started:  # later starts resume this job, whose counters already include what it did
+            self.skipped, self.started = from_unit, True
         self.search.start(threads or os.cpu_count(), from_unit)
 
     def stop(self):
@@ -100,8 +104,9 @@ class Job:
         done, total, elapsed = s["units_done"], s["units_total"], s["elapsed"]
         s["rate"] = done / elapsed if elapsed > 0 else 0.0
         s["checks_rate"] = s["checks"] / elapsed if elapsed > 0 else 0.0
-        s["progress"] = done / total if total else 1.0
-        s["eta"] = (total - done) / s["rate"] if s["rate"] > 0 else None
+        s["units_done"] = done + self.skipped
+        s["progress"] = s["units_done"] / total if total else 1.0
+        s["eta"] = (total - s["units_done"]) / s["rate"] if s["rate"] > 0 else None
         s["py_rejected"] = self.py_rejected
         s["error"] = self.search.error
         # live rarity: the running search is its own calibration sample

@@ -5,11 +5,6 @@ and have not been reproduced; check each one before fixing it. Remove an entry w
 
 ## Bugs
 
-2. **CLI `--start-unit` progress never reaches 100%.** A resumed CLI run is a new `Job`: its
-   `units_done` starts at 0 but `Job.stats` divides by the full total (`sft/__init__.py`), so the
-   percentage and ETA are off by the skipped part. (Resume inside one `Job`, as the GUI does, is
-   exact.) For the same reason a CLI resume can print seeds again that other threads had already
-   finished past the resume point; only the in-process resume remembers those.
 3. **Crack can exhaust memory.** `sft.sisters` builds 65,536 Python ints per structure seed, and a
    crack with weak observations can return up to 2^20 structure seeds (`CAP` in
    `engine/src/gpu.rs`). Cap the count with a clear "add observations" error, or check the sisters
