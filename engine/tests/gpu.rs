@@ -96,7 +96,7 @@ fn gpu_cracks_own_structures() {
     let t = std::time::Instant::now();
     let found = crack::run_gpu(st, &p, &gpu::get().unwrap(), &AtomicBool::new(false), &AtomicU64::new(0)).unwrap();
     eprintln!("{} observations, work {} seeds, {:?}", obs.len(), p.work, t.elapsed());
-    assert_eq!(found, crack::run(st, &p, &AtomicBool::new(false), &AtomicU64::new(0)));
+    assert_eq!(found, crack::run(st, &p, &AtomicBool::new(false), &AtomicU64::new(0)).unwrap());
     assert!(found.contains(&seed));
 }
 

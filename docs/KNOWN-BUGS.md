@@ -5,20 +5,13 @@ and have not been reproduced; check each one before fixing it. Remove an entry w
 
 ## Bugs
 
-3. **Crack can exhaust memory.** `sft.sisters` builds 65,536 Python ints per structure seed, and a
-   crack with weak observations can return up to 2^20 structure seeds (`CAP` in
-   `engine/src/gpu.rs`). Cap the count with a clear "add observations" error, or check the sisters
-   in the engine instead of as a Python list.
-4. **Crack cannot be cancelled and shows no progress.** `PyWorld.crack` creates the stop flag and
-   the progress counter locally (`engine/src/lib.rs`); up to 2^38 seeds of CPU work run with no way
-   to stop them from the GUI or with Ctrl-C.
 5. **Loot queries fail silently.** When the loot tables did not load (`World.loot` is `Err`), the
    `loot` metric returns 0 (`Metric::Loot` in `engine/src/query.rs`) instead of refusing the query,
    and `Loot::fill` errors are swallowed there and in `PyWorld.chests`.
 6. **`check` and the GUI's re-check ignore plugins.** `PyWorld.parse` passes no native libraries, so
    a query with `native(...)` fails with "native plugin not loaded"; `Main._recheck` and
    `cmd_scan` also drop `py(...)` terms without saying so.
-7. **CLI edge cases.** `crack --max` is accepted and ignored; an empty `--seeds-file` silently
+7. **CLI edge cases.** An empty `--seeds-file` silently
    falls back to range mode (`"list" if seeds`); `scan` with only `py(...)` terms sends a null query.
 8. **Two `island()` conditions overwrite each other's details.** `Eval::island` removes every
    earlier `island` detail before adding its own.
@@ -52,8 +45,6 @@ and have not been reproduced; check each one before fixing it. Remove an entry w
   per-structure `Structures::reach`.
 - `data/`, `plugins/` and the docs are found relative to the package parent, so only an editable
   install (`pip install -e .`) works.
-- Plugins are loaded again for every `Job` that is not given the loaded set (the crack path, on a
-  background thread in the GUI).
 - The block editor finds valid structure names by calling `World.attempts` and catching errors,
   which computes stronghold rings at startup; a `resolve` binding would do.
 - No CI. `tests/test_engine.py` covers the search runner now, but needs `data/26.3`.

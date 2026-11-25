@@ -8,7 +8,8 @@
 
 use crate::structure::{Placement, Structures};
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
+use std::sync::Mutex;
 
 /// A structure start the user saw: set index and start chunk.
 #[derive(Clone, Copy, Debug)]
@@ -73,29 +74,48 @@ pub fn plan(st: &Structures, obs: &[Obs]) -> Result<Plan, String> {
     Ok(Plan { cells, bits, lows, work })
 }
 
-/// Brute-forces the high bits for every surviving low-bit pattern. `done` counts seeds tried.
-pub fn run(st: &Structures, p: &Plan, stop: &AtomicBool, done: &AtomicU64) -> Vec<i64> {
+/// Most structure seeds a crack may find (the GPU path has its own per-batch cap).
+pub const MAX_FOUND: usize = 1 << 24;
+
+/// Brute-forces the high bits for every surviving low-bit pattern. `done` counts seeds tried;
+/// `stop` ends it within a block (the result is then incomplete).
+pub fn run(st: &Structures, p: &Plan, stop: &AtomicBool, done: &AtomicU64) -> Result<Vec<i64>, String> {
+    const BLOCK: i64 = 1 << 20;
     let high = 1i64 << (48 - p.bits);
-    let mut out: Vec<i64> = p
-        .lows
-        .iter()
-        .flat_map(|&lo| {
-            (0..high)
-                .into_par_iter()
-                .map(|hi| (hi << p.bits) | lo)
-                .filter(|&seed| {
-                    if seed >> p.bits & 0xFFF == 0 {
-                        done.fetch_add(0x1000, Relaxed);
-                    }
-                    !stop.load(Relaxed) && p.cells.iter().all(|c| st.grid_chunk(c.set, seed, c.grid.0, c.grid.1) == Some(c.chunk))
-                })
-                .collect::<Vec<_>>()
-        })
-        // frequency reducers and exclusion zones (outposts near villages) last: they cost more
-        .filter(|&seed| p.cells.iter().all(|c| st.is_structure_chunk(c.set, seed, c.chunk.0, c.chunk.1)))
-        .collect();
+    let blocks = (high + BLOCK - 1) / BLOCK;
+    // workers pull blocks in order and check `stop` before each one
+    let (n, next, found, full) = (p.lows.len() as i64 * blocks, AtomicI64::new(0), Mutex::new(vec![]), AtomicBool::new(false));
+    std::thread::scope(|sc| {
+        for _ in 0..rayon::current_num_threads() {
+            sc.spawn(|| loop {
+                let k = next.fetch_add(1, Relaxed);
+                if k >= n || stop.load(Relaxed) || full.load(Relaxed) {
+                    return;
+                }
+                let (lo, b) = (p.lows[(k / blocks) as usize], k % blocks);
+                let hi = b * BLOCK..((b + 1) * BLOCK).min(high);
+                let len = (hi.end - hi.start) as u64;
+                let v: Vec<i64> = hi
+                    .map(|hi| (hi << p.bits) | lo)
+                    .filter(|&seed| p.cells.iter().all(|c| st.grid_chunk(c.set, seed, c.grid.0, c.grid.1) == Some(c.chunk)))
+                    // frequency reducers and exclusion zones (outposts near villages) last: they cost more
+                    .filter(|&seed| p.cells.iter().all(|c| st.is_structure_chunk(c.set, seed, c.chunk.0, c.chunk.1)))
+                    .collect();
+                let mut f = found.lock().unwrap();
+                f.extend(v);
+                if f.len() > MAX_FOUND {
+                    full.store(true, Relaxed);
+                }
+                done.fetch_add(len, Relaxed);
+            });
+        }
+    });
+    if full.into_inner() {
+        return Err(format!("more than {MAX_FOUND} structure seeds fit these observations; add more observations"));
+    }
+    let mut out = found.into_inner().unwrap();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// `run` with the high-bit brute force on the GPU (gpu.cu `crack`); same result.
@@ -138,7 +158,7 @@ mod tests {
         }
         let p = plan(st, &obs).unwrap();
         eprintln!("{} observations, {} low candidates, work {}", obs.len(), p.lows.len(), p.work);
-        let found = run(st, &p, &AtomicBool::new(false), &AtomicU64::new(0));
+        let found = run(st, &p, &AtomicBool::new(false), &AtomicU64::new(0)).unwrap();
         assert!(found.contains(&seed), "{found:?}");
     }
 }

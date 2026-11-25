@@ -91,6 +91,14 @@ pin 3 bits per coordinate, shipwrecks 2). The rest is brute force, about 0.5 s p
 biomes), and observations of ancient cities, monuments and mansions help the final check but not
 the lifting.
 
+A crack is one job: the progress bar shows the brute force (seeds tried), then the sister check,
+and Stop (Ctrl-C in the CLI) works in both. Resume after stopping the brute force starts it again;
+after the sister check started, Resume continues it. `--max N` stops after N matching seeds. Weak
+observations are refused before anything runs (more than 2^38 seeds to brute-force, 2^44 on the
+GPU) or once more than 2^24 structure seeds fit them; above 1,024 structure seeds the log warns
+with the expected sister-check time. Use `/locate` positions: the piece positions that `sft locate`
+prints can lie in a neighbouring chunk.
+
 In the GUI: Tools, Crack seed from structures (one `name x z` per line, an optional
 `query: ...` line). With GPU ticked the brute force runs on the graphics card (268M seeds in about
 0.7 s on an RTX 5070 Ti, start-up included).

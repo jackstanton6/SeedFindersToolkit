@@ -102,8 +102,10 @@ pub enum Mode {
     Range { start: i64, count: u64 },
     /// Consecutive 48-bit structure seeds; survivors are expanded to all 65536 upper bits.
     StructureSeeds { start: u64, count: u64 },
-    /// Explicit seeds (file, cracker output, plugin seed source...).
+    /// Explicit seeds (file, plugin seed source...).
     List(Vec<i64>),
+    /// Explicit structure seeds (cracker output), each expanded to all 65536 upper bits.
+    StructureList(Vec<i64>),
     /// Pseudo-random 64-bit seeds from a fixed generator seed (reproducible).
     Random { count: u64, rng_seed: u64 },
 }
@@ -112,8 +114,13 @@ impl Mode {
     pub fn units(&self) -> u64 {
         match self {
             Mode::Range { count, .. } | Mode::StructureSeeds { count, .. } | Mode::Random { count, .. } => *count,
-            Mode::List(v) => v.len() as u64,
+            Mode::List(v) | Mode::StructureList(v) => v.len() as u64,
         }
+    }
+
+    /// Units are structure seeds whose sisters get checked.
+    pub fn expands(&self) -> bool {
+        matches!(self, Mode::StructureSeeds { .. } | Mode::StructureList(_))
     }
 }
 
@@ -285,6 +292,7 @@ impl Search {
         match &self.mode {
             Mode::Range { start, .. } => start.wrapping_add(i as i64),
             Mode::List(v) => v[i as usize],
+            Mode::StructureList(v) => v[i as usize] & ((1 << 48) - 1),
             Mode::Random { rng_seed, .. } => splitmix(rng_seed.wrapping_add(i)) as i64,
             Mode::StructureSeeds { start, .. } => ((start + i) & ((1 << 48) - 1)) as i64,
         }
@@ -337,7 +345,7 @@ impl Search {
     fn unit(&self, i: u64, (k, of): (u64, u64), local: &mut Local) -> bool {
         let i = self.shuffle.map_or(i, |k| permute(i, self.mode.units(), k));
         match &self.mode {
-            Mode::StructureSeeds { .. } => {
+            Mode::StructureSeeds { .. } | Mode::StructureList(_) => {
                 let low = self.seed(i);
                 if k == 0 {
                     local.checks += 1;
@@ -395,7 +403,8 @@ impl Search {
         }
         let resume = match &self.gpu {
             Some((g, prog)) => self.run_gpu(g, prog, from, to, threads),
-            None => from + self.run_cpu(to - from, 1, &|p| from + p, &|_| 0, threads),
+            // few units of 65536 sisters each: share every unit among all threads
+            None => from + self.run_cpu(to - from, if matches!(self.mode, Mode::StructureList(_)) { 16 } else { 1 }, &|p| from + p, &|_| 0, threads),
         };
         self.done_ahead.lock().unwrap().0 = resume;
         resume
@@ -408,7 +417,7 @@ impl Search {
             Mode::Range { start, .. } => (0, start as u64),
             Mode::StructureSeeds { start, .. } => (1, start),
             Mode::Random { rng_seed, .. } => (2, rng_seed),
-            Mode::List(_) => unreachable!("use_gpu rejects lists"),
+            Mode::List(_) | Mode::StructureList(_) => unreachable!("use_gpu rejects lists"),
         };
         let shuffle = self.shuffle.map(|k| (self.mode.units(), k));
         // the few survivors of a structure-seed batch share their 65536 sisters among all threads
@@ -461,7 +470,7 @@ impl Search {
     /// `done_ahead`. `unit_at` must be increasing.
     fn run_cpu(&self, n: u64, parts: u64, unit_at: &(dyn Fn(u64) -> u64 + Sync), skipped: &(dyn Fn(u64) -> u64 + Sync), threads: usize) -> u64 {
         // small blocks when there is little work, so slow queries still use every thread
-        let block = if matches!(self.mode, Mode::StructureSeeds { .. }) { 1 } else { (n / (threads.max(1) as u64 * 16)).clamp(1, 256) };
+        let block = if self.mode.expands() { 1 } else { (n / (threads.max(1) as u64 * 16)).clamp(1, 256) };
         let left: Vec<AtomicU64> = if parts > 1 { (0..n).map(|_| AtomicU64::new(parts)).collect() } else { vec![] };
         let next = AtomicU64::new(0);
         let skip = self.done_ahead.lock().unwrap().1.clone();
@@ -533,7 +542,7 @@ impl Search {
 
     /// Turns on the GPU pre-filter; Err says why it cannot be used for this search.
     pub fn use_gpu(&mut self) -> Result<String, String> {
-        if matches!(self.mode, Mode::List(_)) {
+        if matches!(self.mode, Mode::List(_) | Mode::StructureList(_)) {
             return Err("seed lists run on the CPU".into());
         }
         let prog = gpu::program(&self.world, &self.cond);
@@ -553,7 +562,7 @@ impl Search {
 
     /// 64-bit seeds one unit stands for.
     fn seeds_per_unit(&self) -> f64 {
-        if matches!(self.mode, Mode::StructureSeeds { .. }) { 65536.0 } else { 1.0 }
+        if self.mode.expands() { 65536.0 } else { 1.0 }
     }
 
     /// Runs the search itself for up to `secs` seconds (or until `stop`), measures throughput,
@@ -580,7 +589,7 @@ impl Search {
         if units <= 0.0 {
             return json!({"note": format!("no seed finished in {secs:.1}s: each one takes longer than that per thread")});
         }
-        let structure = matches!(self.mode, Mode::StructureSeeds { .. });
+        let structure = self.mode.expands();
         // pass rate of the 48-bit pre-check (sister evaluations are not pre-checks)
         let p = if gpu_units > 0.0 { gpu_passed / gpu_units } else { passed / (checks - if structure { full } else { 0.0 }).max(1.0) };
         let mut rate = units / secs;

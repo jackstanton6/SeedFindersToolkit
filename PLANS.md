@@ -261,10 +261,10 @@ all test files pass before the last commit.
 - [x] 1. Estimate then Resume: `Main.estimate` resets `resume_unit` (and the results table).
 - [x] 2. CLI `--start-unit`: the Job knows its start unit; percent and ETA count only the remaining
   range. Possible duplicates near the resume point (at most a block per thread) are documented.
-- [ ] 3. Crack memory: sisters of cracked structure seeds are expanded and checked in the engine
+- [x] 3. Crack memory: sisters of cracked structure seeds are expanded and checked in the engine
   (threaded, streamed to results), not as Python lists. Above 1,024 structure seeds, warn with the
   expected sister-check time and suggest more observations; the crack keeps running.
-- [ ] 4. Crack runs as a normal Job: progress, ETA, Stop, Ctrl-C.
+- [x] 4. Crack runs as a normal Job: progress, ETA, Stop, Ctrl-C.
 - [ ] 5. Loot: a query using loot is refused at parse when the tables did not load (message names
   `python -m sft data 26.3`); a fill error stops the search with the unit and message.
 - [ ] 6. Plugins everywhere: `PyWorld.parse` gets the loaded native libraries; `check`, the GUI

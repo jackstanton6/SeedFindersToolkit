@@ -3,6 +3,8 @@ import csv
 import json
 import math
 import os
+import threading
+import time
 from pathlib import Path
 
 from . import data, plugins, query
@@ -45,6 +47,7 @@ class Job:
 
     def __init__(self, version: str, query_text, mode="range", start=0, count=1_000_000, seeds=None, max_results=0, loaded=None, gpu=False,
                  shuffle=None):
+        self.mode = mode
         tree = query.parse(query_text) if isinstance(query_text, str) else query_text
         engine_tree, self.py_terms = query.split_python(tree)
         self.world = world(version)
@@ -62,7 +65,7 @@ class Job:
         self.py_rejected = 0
         # maximize()/minimize(): rows are the best `keep` seeds by score, best first
         self.ranked, self.keep, self.max_results = self.search.ranked, max_results or 100, max_results
-        self.seeds_per_unit = 65536 if mode == "structure_seeds" else 1
+        self.seeds_per_unit = 65536 if mode in ("structure_seeds", "structure_list") else 1
         self.skipped = 0  # units before the first start's from_unit (a CLI resume): done by an earlier run
         self.started = False
 
@@ -77,6 +80,10 @@ class Job:
 
     def stop(self):
         self.search.stop()
+
+    def take_notes(self) -> list[str]:
+        """Messages for the user since the last call (a CrackJob reports its phases here)."""
+        return []
 
     def running(self) -> bool:
         return self.search.running()
@@ -134,13 +141,120 @@ def cuda_status() -> tuple[bool, str]:
     return engine().cuda_status() if _engine is not None else (False, "engine not built")
 
 
-def crack(version: str, observations, extra_query: str = "", max_work=None, gpu=False) -> tuple[list[int], "Job | None"]:
-    """Observed structure starts [(structure, x, z)] -> 48-bit structure seeds, plus a list Job over
-    their sisters checking every observation with biomes (and `extra_query`, e.g. biome or height
-    observations). Run the Job for the full 64-bit seeds. `gpu` brute-forces on the CUDA device."""
-    found = world(version).crack([(n, x, z) for n, x, z in observations], max_work, gpu)
-    q = " and ".join(t for t in (observation_query(observations), extra_query) if t)
-    return found, (Job(version, q, "list", seeds=sisters(found)) if found else None)
+CRACK_WARN = 1024  # structure seeds: more than this and the sister check gets a time warning
+
+
+class CrackJob:
+    """Observed structure starts [(structure, x, z)] -> seeds: the brute force for the 48-bit
+    structure seeds, then a search of their sisters checking every observation with biomes (and
+    `extra_query`, e.g. biome or height observations). The interface of Job: progress is the brute
+    force first (seeds tried), then the sister search. `gpu` brute-forces on the CUDA device."""
+
+    mode = "crack"
+    seeds_per_unit = 65536
+
+    def __init__(self, version: str, observations, extra_query: str = "", max_work=None, gpu=False, max_results=0, loaded=None):
+        self.version, self.max_results, self.loaded = version, max_results, loaded or plugins.load(version)
+        self.query = " and ".join(t for t in (observation_query(observations), extra_query) if t)
+        # a bad extra query is refused now, not after the brute force
+        self.ranked = Job(version, self.query, "structure_list", seeds=[], loaded=self.loaded).ranked
+        self.crack = engine().Crack(world(version), [(n, x, z) for n, x, z in observations], max_work, gpu)
+        self.gpu_note = "crack brute force on the GPU" if gpu else ""
+        self.found: list[int] | None = None  # structure seeds, once the brute force has finished
+        self.job: Job | None = None  # the sister search
+        self.error = None
+        self.notes: list[str] = []
+        self.py_rejected = 0
+        self._thread = None
+        self._stopped = False
+        self._lock = threading.Lock()
+        self._clock = (0.0, None)  # brute force: seconds of finished runs, start of the current one
+
+    @property
+    def rows(self):
+        return self.job.rows if self.job else []
+
+    def estimate(self, seconds=3.0, threads=None) -> dict:
+        return {"note": "no estimate for a crack: progress shows the brute force, then the sister check"}
+
+    def start(self, threads=None, from_unit=0):
+        """Starts the brute force (again from the beginning if it was stopped), or resumes the sister search."""
+        if self.job:
+            self.job.start(threads, from_unit)
+            return
+        self._stopped, self.error = False, None
+        self._clock = (self._clock[0], time.monotonic())
+        self._thread = threading.Thread(target=self._run, args=(threads,), daemon=True)
+        self._thread.start()
+
+    def _run(self, threads):
+        try:
+            found = self.crack.run()
+        except Exception as e:
+            self.error = f"crack failed: {e}"
+            return
+        finally:
+            self._clock = (self._clock[0] + time.monotonic() - self._clock[1], None)
+        if self._stopped:
+            return  # incomplete: Resume runs the brute force again
+        self.found = found
+        self.notes.append(f"crack: {len(found)} structure seed(s)" + (f": {' '.join(map(str, found[:50]))}" if found else
+                                                                       "; check the coordinates and structure names"))
+        if not found:
+            return
+        try:
+            job = Job(self.version, self.query, "structure_list", seeds=found, max_results=self.max_results, loaded=self.loaded)
+            if len(found) > CRACK_WARN:
+                t = job.estimate(1.0, threads).get("seconds_total")
+                self.notes.append(f"warning: {len(found)} structure seeds, so {len(found) * 65536:,} sister seeds to check"
+                                  + (f" (about {t / 3600:.1f} h)" if t else "")
+                                  + "; more observations (huts, temples, outposts, shipwrecks) narrow it down")
+            else:
+                self.notes.append(f"checking {len(found) * 65536:,} sister seeds")
+        except Exception as e:
+            self.error = f"sister search failed: {e}"
+            return
+        with self._lock:
+            self.job = job
+            if not self._stopped:
+                job.start(threads)
+
+    def stop(self):
+        with self._lock:
+            self._stopped = True
+            self.crack.stop()
+            if self.job:
+                self.job.stop()
+
+    def running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive()) or bool(self.job and self.job.running())
+
+    def join(self) -> int:
+        """Blocks until done; returns the unit to resume from (the brute force restarts at 0)."""
+        if self._thread:
+            self._thread.join()
+        if self.job:
+            return self.job.join()
+        return self.crack.work if self.found is not None else 0
+
+    def poll(self):
+        return self.job.poll() if self.job else []
+
+    def take_notes(self) -> list[str]:
+        notes, self.notes = self.notes, []
+        return notes
+
+    def stats(self) -> dict:
+        if self.job:
+            s = self.job.stats()
+            s["error"] = s["error"] or self.error
+            return s
+        done, total = self.crack.done, self.crack.work
+        elapsed = self._clock[0] + (time.monotonic() - self._clock[1] if self._clock[1] is not None else 0.0)
+        rate = done / elapsed if elapsed > 0 else 0.0
+        return {"units_done": done, "units_total": total, "checks": done, "prefilter_passed": 0, "full_evals": 0, "matched": 0,
+                "elapsed": elapsed, "rate": rate, "checks_rate": rate, "progress": done / total if total else 1.0,
+                "eta": (total - done) / rate if rate > 0 else None, "py_rejected": 0, "error": self.error, "rarity": {}}
 
 
 def score(details: list) -> float:

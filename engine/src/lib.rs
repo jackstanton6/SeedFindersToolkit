@@ -25,7 +25,7 @@ mod py {
     use pyo3::prelude::*;
     use rayon::prelude::*;
     use serde_json::Value;
-    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
     use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
     use std::time::Instant;
@@ -221,39 +221,76 @@ mod py {
                 Value::Array(out).to_string()
             }))
         }
-
-        /// Structure-seed cracking from observed starts [(structure or set, block x, block z)]:
-        /// the 48-bit structure seeds placing all of them. Errors if more than `max_work` seeds
-        /// would have to be brute-forced (default 2^38 on the CPU, 2^44 with `gpu`; add observations
-        /// of huts, temples, outposts, shipwrecks).
-        #[pyo3(signature = (observations, max_work=None, gpu=false))]
-        fn crack(&self, py: Python<'_>, observations: Vec<(String, i32, i32)>, max_work: Option<u64>, gpu: bool) -> PyResult<Vec<i64>> {
-            let st = &self.w.structures;
-            let obs = observations
-                .iter()
-                .map(|(n, x, z)| Ok(crate::crack::Obs { set: st.resolve(n).ok_or_else(|| err(format!("unknown structure '{n}'")))?.0, chunk: (x >> 4, z >> 4) }))
-                .collect::<PyResult<Vec<_>>>()?;
-            let world = self.w.clone();
-            py.detach(move || {
-                let p = crate::crack::plan(&world.structures, &obs).map_err(err)?;
-                let max_work = max_work.unwrap_or(if gpu { 1 << 44 } else { 1 << 38 });
-                if p.work > max_work {
-                    return Err(err(format!("{} seeds to brute-force (limit {max_work}); add more observations", p.work)));
-                }
-                let (stop, done) = (std::sync::atomic::AtomicBool::new(false), std::sync::atomic::AtomicU64::new(0));
-                if gpu {
-                    let g = crate::gpu::get().map_err(err)?;
-                    return crate::crack::run_gpu(&world.structures, &p, &g, &stop, &done).map_err(err);
-                }
-                Ok(crate::crack::run(&world.structures, &p, &stop, &done))
-            })
-        }
     }
 
     impl PyWorld {
         fn parse(&self, query: &str) -> PyResult<query::Cond> {
             let q: Value = serde_json::from_str(query).map_err(|e| err(e.to_string()))?;
             query::parse(&self.w, &[], &q).map_err(err)
+        }
+    }
+
+    /// Structure-seed cracking from observed starts [(structure or set, block x, block z)]: `run`
+    /// finds the 48-bit structure seeds placing all of them. Refused if more than `max_work` seeds
+    /// would have to be brute-forced (default 2^38 on the CPU, 2^44 with `gpu`; add observations
+    /// of huts, temples, outposts, shipwrecks).
+    #[pyclass(name = "Crack", frozen)]
+    struct PyCrack {
+        w: Arc<World>,
+        plan: Arc<crate::crack::Plan>,
+        gpu: bool,
+        stop: Arc<AtomicBool>,
+        done: Arc<AtomicU64>,
+    }
+
+    #[pymethods]
+    impl PyCrack {
+        #[new]
+        #[pyo3(signature = (world, observations, max_work=None, gpu=false))]
+        fn new(py: Python<'_>, world: &PyWorld, observations: Vec<(String, i32, i32)>, max_work: Option<u64>, gpu: bool) -> PyResult<Self> {
+            let st = &world.w.structures;
+            let obs = observations
+                .iter()
+                .map(|(n, x, z)| Ok(crate::crack::Obs { set: st.resolve(n).ok_or_else(|| err(format!("unknown structure '{n}'")))?.0, chunk: (x >> 4, z >> 4) }))
+                .collect::<PyResult<Vec<_>>>()?;
+            let w = world.w.clone();
+            let plan = py.detach(|| crate::crack::plan(&w.structures, &obs)).map_err(err)?;
+            let max_work = max_work.unwrap_or(if gpu { 1 << 44 } else { 1 << 38 });
+            if plan.work > max_work {
+                return Err(err(format!("{} seeds to brute-force (limit {max_work}); add more observations", plan.work)));
+            }
+            Ok(PyCrack { w, plan: Arc::new(plan), gpu, stop: Arc::default(), done: Arc::default() })
+        }
+
+        /// Seeds the brute force tries in all.
+        #[getter]
+        fn work(&self) -> u64 {
+            self.plan.work
+        }
+
+        /// Seeds tried so far.
+        #[getter]
+        fn done(&self) -> u64 {
+            self.done.load(Relaxed)
+        }
+
+        /// Ends a running `run` early (its result is then incomplete).
+        fn stop(&self) {
+            self.stop.store(true, Relaxed);
+        }
+
+        /// Runs the brute force from the start (blocks, without the GIL): sorted structure seeds.
+        fn run(&self, py: Python<'_>) -> PyResult<Vec<i64>> {
+            self.stop.store(false, Relaxed);
+            self.done.store(0, Relaxed);
+            let (w, p, stop, done, gpu) = (self.w.clone(), self.plan.clone(), self.stop.clone(), self.done.clone(), self.gpu);
+            py.detach(move || {
+                if gpu {
+                    let g = crate::gpu::get().map_err(err)?;
+                    return crate::crack::run_gpu(&w.structures, &p, &g, &stop, &done).map_err(err);
+                }
+                crate::crack::run(&w.structures, &p, &stop, &done).map_err(err)
+            })
         }
     }
 
@@ -270,6 +307,7 @@ mod py {
     #[pymethods]
     impl PySearch {
         /// mode: "range" (start, count), "structure_seeds" (start, count), "list" (seeds),
+        /// "structure_list" (seeds: structure seeds, each searched with its 65536 sisters),
         /// "random" (count, start = generator seed). natives: [(plugin name, library path)].
         /// gpu: pre-filter on the CUDA device when the query allows it (see `gpu_note`).
         /// shuffle: visit the units in a shuffled order with this key (no repeats, resumable).
@@ -282,6 +320,7 @@ mod py {
                 "range" => Mode::Range { start, count },
                 "structure_seeds" => Mode::StructureSeeds { start: start as u64, count },
                 "list" => Mode::List(seeds.unwrap_or_default()),
+                "structure_list" => Mode::StructureList(seeds.unwrap_or_default()),
                 "random" => Mode::Random { count, rng_seed: start as u64 },
                 m => return Err(err(format!("unknown mode '{m}'"))),
             };
@@ -413,6 +452,7 @@ mod py {
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyWorld>()?;
         m.add_class::<PySearch>()?;
+        m.add_class::<PyCrack>()?;
         m.add("PLUGIN_ABI", search::ABI_VERSION)?;
         m.add_function(wrap_pyfunction!(cuda_status, m)?)?;
         m.add("CLIMATE_PARAMS", query::CLIMATE_PARAMS.to_vec())?;

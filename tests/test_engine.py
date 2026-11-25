@@ -95,10 +95,56 @@ def test_a_new_job_resumed_from_a_unit_counts_the_units_before_it():
     assert s["rarity"]["p"] == s["matched"] / 5_000  # rarity only from the seeds this run checked
 
 
+def test_crack_runs_as_a_job():
+    # a seed is recovered from its own structures: brute force, then its sisters in the engine
+    seed = -4172144997902289642
+    # /locate positions (what players report), not piece positions: those can lie in a neighbouring chunk
+    obs = [(n, x, z) for m in ("swamp_hut", "desert_pyramid", "pillager_outpost", "igloo", "jungle_pyramid")
+           for x, z, n in w.attempts(seed, m, 0, 0, 3000) if n]
+    job = sft.CrackJob("26.3", obs, max_results=1)
+    t = time.time()
+    job.start(8)
+    while job.running():
+        time.sleep(0.05)
+        job.stats()  # live in both phases
+    job.join()
+    assert not job.stats()["error"] and job.stats()["matched"] == 1, job.stats()
+    # five structures leave sisters that fit too: the first match need not be `seed`, but it must match
+    assert (seed & (2**48 - 1)) in job.found, len(job.found)
+    q = json.dumps(query.parse(job.query))
+    (found, _), = job.poll()
+    assert w.check(found, q) is not None and w.check(seed, q) is not None
+    notes = job.take_notes()
+    assert any(n.startswith("crack: ") for n in notes) and any("sister seeds" in n for n in notes), notes
+    print(f"  crack of {len(obs)} observations: {time.time() - t:.1f}s")
+
+    # many structure seeds: a warning with the expected sister-check time, and the search still runs
+    warn, sft.CRACK_WARN = sft.CRACK_WARN, 100
+    try:
+        job = sft.CrackJob("26.3", obs, max_results=1)
+        job.start(8)
+        job.join()
+        notes = job.take_notes()
+        assert any(n.startswith("warning: 765 structure seeds") and " h)" in n for n in notes) and job.stats()["matched"] == 1, notes
+    finally:
+        sft.CRACK_WARN = warn
+
+    # a weak crack (one pyramid: ~2^42 seeds) stops at once and starts over on resume
+    job = sft.CrackJob("26.3", obs[:1], max_work=2**44)
+    job.start(4)
+    time.sleep(0.3)
+    job.stop()
+    t = time.time()
+    assert job.join() == 0 and time.time() - t < 2 and not job.running()
+    s = job.stats()
+    assert 0 < s["units_done"] < s["units_total"] and s["progress"] < 1 and job.found is None, s
+
+
 if __name__ == "__main__":
     test_mistakes_are_refused_with_a_hint()
     test_failed_branches_leave_nothing_behind()
     test_anywhere_moves_the_condition_from_at()
     test_max_results_is_a_total_and_resume_keeps_the_clock()
     test_a_new_job_resumed_from_a_unit_counts_the_units_before_it()
+    test_crack_runs_as_a_job()
     print("ok")

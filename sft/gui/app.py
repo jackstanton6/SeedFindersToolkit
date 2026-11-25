@@ -536,6 +536,8 @@ class Main(QMainWindow):
         if self.job is None:
             return
         self._show_rows(self.job.poll())
+        for note in self.job.take_notes():
+            self.say(note)
         s = self.job.stats()
         self.stat["kept"].setText(fmt_num(len(self.job.rows)))
         self.progress.setValue(int(s["progress"] * 1000))
@@ -552,7 +554,7 @@ class Main(QMainWindow):
         self.stat["eta"].setText(fmt_secs(s["eta"]))
         if s["units_done"] > 0:
             self._show_rarity(s["rarity"])
-        if self.job.seeds_per_unit > 1 and s["checks"] > 1000 and s["prefilter_passed"] / s["checks"] > 0.5 and not self.hinted:
+        if self.job.mode == "structure_seeds" and s["checks"] > 1000 and s["prefilter_passed"] / s["checks"] > 0.5 and not self.hinted:
             self.hinted = True
             self.say("hint: most structure seeds pass this query's pre-check (no rare structure condition), so "
                      "structure-seed mode checks every sister seed and is no faster than range mode")
@@ -560,6 +562,8 @@ class Main(QMainWindow):
             self.timer.stop()
             self.resume_unit = self.job.join()
             self._show_rows(self.job.poll())  # stragglers after the last tick
+            for note in self.job.take_notes():
+                self.say(note)
             done = self.resume_unit >= s["units_total"]
             if s["error"]:
                 self.say(s["error"])
@@ -681,23 +685,20 @@ class Main(QMainWindow):
         except ValueError:
             QMessageBox.warning(self, "crack", f"cannot read line: {line}")
             return
-        self.say(f"cracking from {len(obs)} structure(s)...")
-
-        def done(res):
-            if isinstance(res, Exception):
-                self.say(f"crack failed: {res}")
-                return
-            found, job = res
-            self.say(f"crack: {len(found)} structure seed(s): {' '.join(map(str, found))}")
-            if job and self.busy():
-                self.say("a search is running; stop it and use 'search sister seeds' on a structure seed")
-            elif job:
-                self.job, self.resume_unit = job, 0
-                self.results.setRowCount(0)
-                self.job.start(self.threads.value())
-                self.timer.start()
-                self.say(f"checking {len(found) * 65536:,} sister seeds")
-        self._background(lambda: sft.crack(self.version.currentText(), obs, extra, gpu=self.use_gpu.isChecked()), done)
+        if self.busy():
+            QMessageBox.information(self, "crack", "a search is running: stop it first")
+            return
+        try:
+            job = sft.CrackJob(self.version.currentText(), obs, extra, gpu=self.use_gpu.isChecked(),
+                               max_results=self.max_results.value(), loaded=self.loaded)
+        except Exception as e:
+            QMessageBox.warning(self, "crack", str(e))
+            return
+        self.job, self.resume_unit, self.hinted = job, 0, False
+        self.results.setRowCount(0)
+        self.job.start(self.threads.value())
+        self.timer.start()
+        self.say(f"cracking from {len(obs)} structure(s): {job.crack.work:,} seeds to brute-force, then the sisters of each structure seed found")
 
     def placement_stats(self):
         names = [self.map_attempts.itemText(i) for i in range(1, self.map_attempts.count())]

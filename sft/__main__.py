@@ -27,7 +27,7 @@ def cmd_search(a):
 def run_job(job, a):
     if job.gpu_note:
         print(job.gpu_note, file=sys.stderr)
-    est = job.estimate(a.sample, a.threads) if a.sample > 0 else {}
+    est = job.estimate(a.sample, a.threads) if a.sample > 0 and job.mode != "crack" else {}
     if "note" in est:
         print("estimate:", est["note"], file=sys.stderr)
     if "seconds_total" in est:
@@ -40,6 +40,9 @@ def run_job(job, a):
     try:
         while job.running():
             time.sleep(0.5)
+            for note in job.take_notes():
+                print("
+" + note, file=sys.stderr)
             for seed, details in job.poll():
                 print(seed, json.dumps(details) if a.details else "", flush=True)
             s = job.stats()
@@ -48,6 +51,9 @@ def run_job(job, a):
     except KeyboardInterrupt:
         job.stop()
     resume = job.join()
+    for note in job.take_notes():
+        print("
+" + note, file=sys.stderr)
     if job.stats()["error"]:
         print("\n" + job.stats()["error"], file=sys.stderr)
     for seed, details in job.poll():
@@ -81,11 +87,7 @@ def cmd_crack(a):
         name, _, xz = o.partition(":")
         x, z = (int(v) for v in xz.split(","))
         obs.append((name, x, z))
-    found, job = sft.crack(a.version, obs, a.query, gpu=a.gpu)
-    print(f"{len(found)} structure seed(s):", *found, file=sys.stderr)
-    if job:
-        print(f"checking {len(found) * 65536:,} sister seeds", file=sys.stderr)
-        run_job(job, a)
+    run_job(sft.CrackJob(a.version, obs, a.query, gpu=a.gpu, max_results=a.max), a)
 
 
 def cmd_loot(a):
