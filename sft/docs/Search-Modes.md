@@ -128,7 +128,14 @@ the seed alone, in batches of up to 16M seeds:
   condition), including every frequency-reduction method of the vanilla sets;
 - `cluster` of one structure: some start with `count - 1` others close enough (for quad witch huts
   this keeps about 1 structure seed in 900);
-- slime chunks.
+- slime chunks;
+- biomes, in range, random and shuffled searches (whole seeds; not in structure-seed mode, where
+  biomes depend on each sister): `biome(...)` near a point, and for desert pyramids, jungle temples,
+  swamp huts, igloos, shipwrecks, ocean ruins, monuments and mansions whether each start's column
+  has a biome the structure needs. The GPU computes climate and biomes exactly as the CPU does;
+  where two biomes tie (a point on the border of two parameter boxes, about 1 lookup in 1,000) it
+  allows both. Structures placed by jigsaw (villages, outposts, ancient cities, trial chambers) get
+  their biomes checked on the CPU.
 
 Every seed the GPU passes still gets the exact CPU pre-check (exclusion zones such as outposts near
 villages, the exact cluster geometry) and the full check, so results are identical with and without
@@ -144,6 +151,12 @@ survive to biome and terrain checks, those dominate and the GPU changes little, 
 mode the 65,536 sister checks per surviving structure seed stay on the CPU. Quad witch huts
 (structure seeds): 760 structure seeds/s on the CPU, 890/s with the GPU. Low GPU utilisation in
 such searches is expected: the GPU finishes its batch quickly and waits for the CPU.
+
+With biomes on the GPU (range mode, 64k seeds, against the CPU's pre-check and full check):
+`desert_pyramid(within=300)` 477k seeds/s vs 115k (4.2x); `village(within=400) and
+biome('cherry_grove', within=600)` 10.4k vs 3.0k (3.5x); `biome('mushroom_fields', within=1500)`
+1.46k vs 202 (7.2x). The GPU's survivors are then nearly all real matches, so the CPU has little
+left to do. The log says `(with biomes)` when they are on.
 
 Building with GPU support needs the CUDA toolkit's `nvcc` when the engine is compiled (`pip install
 -e .` picks it up from `CUDA_PATH` or `PATH`); running needs only the NVIDIA driver. Without either,

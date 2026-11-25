@@ -282,7 +282,7 @@ all test files pass before the last commit.
 
 Then: the GPU biome milestone below, as written.
 
-## Next: biome checks on the GPU (milestone)
+## Biome checks on the GPU (milestone, done 2026-11-26)
 
 The GPU only rejects what the 48-bit pre-check rejects; every survivor still needs biomes (and often
 heights) on the CPU, so the GPU idles whenever the CPU check is the limit (most real queries). Porting
@@ -296,3 +296,24 @@ the climate path makes the GPU do the heavy lifting:
   mismatches), superset parity for the lowered queries, and measured speedups.
 Heights and terrain (final density, aquifer) stay on the CPU unless the biome port shows they are
 worth it.
+
+Done:
+- [x] Device climate: the compiled climate samplers walked into a node array (`gpu::ClimateProgram`,
+  any point-path sampler; seed-independent shape), per-seed Xoroshiro forks and Perlin layers, splines,
+  cache nodes memoised by position (xz-only ones reused down a column), R-tree search. Parity: 200k
+  random (seed, quart) lookups match `Seeded::biome` with zero mismatches.
+- [x] Ties: where leaves of different biomes sit at the same distance the CPU's warm start decides,
+  so the device returns every tied biome (about 1 lookup in 1,000) and atoms allow any of them.
+- [x] Lowering (whole seeds only: range, random, shuffled; not structure-seed mode): `biome(...)` with
+  lower and upper bounds on the fraction, and `column_ok` for structures checked that way before any
+  terrain step (scattered features, igloos, shipwrecks, ocean ruins, monuments, mansions). Jigsaw
+  structures keep their biome checks on the CPU.
+- [x] Two stages: a thread per seed for placement, then a 128-thread block per survivor for biomes
+  (its Perlin tables in shared memory, column quarts and grid points shared out). Batches start at
+  256 units for biome programs (display watchdog).
+- [x] Superset test: every CPU match survives, 11 queries x 2 modes; survivors are nearly the matches.
+  Speed (RTX 5070 Ti vs 24 threads): 4.2x, 3.5x and 7.2x on structure-biome, village + biome and
+  large biome-grid queries.
+
+Possible next steps: biomes for structure-seed mode (a stage that checks each survivor's 65,536
+sisters on the GPU), jigsaw start columns (needs the start-piece choice), `biome_area`/`island` grids.

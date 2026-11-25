@@ -594,6 +594,31 @@ impl Structures {
     /// Random-spread parameters for the GPU kernel (gpu.cu): spacing, separation, triangular, salt,
     /// frequency reduction (0 default, 1-3 legacy types, 4 none), frequency bits, locate offset x, z.
     /// Exclusion zones are left to the CPU.
+    /// The column every start of this set (or of `only`) must allow biome-wise, checked before
+    /// anything that needs terrain (`column_ok` from the world's bottom to its top), for the GPU:
+    /// (offset of the column from the chunk corner, the biomes it may contain). None when some
+    /// structure has no such check (jigsaw, ruined portals, mineshafts, strongholds).
+    pub fn gpu_column(&self, set: usize, only: Option<usize>) -> Option<(i32, BiomeSet)> {
+        let mut out: Option<(i32, BiomeSet)> = None;
+        for &(st, _) in &self.sets[set].entries {
+            if only.is_some_and(|o| o != st) {
+                continue;
+            }
+            let s = &self.structures[st];
+            let off = match s.kind {
+                Kind::OnTop(..) | Kind::SinglePiece(..) | Kind::Monument => 8,
+                Kind::Mansion => 7,
+                _ => return None,
+            };
+            out = match out {
+                None => Some((off, s.biomes)),
+                Some((o, b)) if o == off => Some((o, b | s.biomes)),
+                _ => return None,
+            };
+        }
+        out
+    }
+
     pub fn gpu_spread(&self, set: usize) -> Option<[i32; 8]> {
         let s = &self.sets[set];
         let Placement::Spread { spacing, separation, triangular } = s.placement else { return None };

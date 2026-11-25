@@ -24,13 +24,17 @@ engine/src/
                 full eval (Eval); single-seed scan
   search.rs     threaded search runner (modes, stats, ranked top-N), native plugin ABI
   crack.rs      structure-seed cracking (low-bit lifting + brute force)
-  gpu.rs        CUDA driver API (loaded at runtime), query -> GPU program lowering, filter/crack launches
-  gpu.cu        CUDA kernels: literal ports of JavaRandom, grid_chunk, frequency_ok, potential, slime
+  gpu.rs        CUDA driver API (loaded at runtime), query -> GPU program lowering, filter/crack launches,
+                the climate program (compiled climate samplers, noise layers, R-tree) for the device
+  gpu.cu        CUDA kernels: literal ports of JavaRandom, grid_chunk, frequency_ok, potential, slime,
+                Xoroshiro, Perlin/NoiseStack, the point-path samplers and RTree.search; stage 1 is a
+                thread per seed (placement), stage 2 a block per survivor (biomes, Perlin tables in
+                shared memory)
 engine/build.rs compiles gpu.cu to PTX when nvcc exists (cfg sft_cuda); otherwise the GPU is unavailable
   loot.rs       LootTable.fill over the vanilla loot JSON
   lib.rs        PyO3 bindings (feature "python") -> sft._engine
 engine/tests/oracle.rs   parity tests against the real game (ignored by default)
-engine/tests/gpu.rs      GPU kernel vs CPU pre-check parity (ignored; needs a CUDA device)
+engine/tests/gpu.rs      GPU kernel vs CPU parity: pre-check, biomes, superset of matches (ignored; needs CUDA)
 oracle/Oracle.java       ground-truth dumper that runs the actual 26.3 server classes
 tests/loot_oracle.py     loot ground truth from the dedicated server (EULA) and its region files
 sft/            __init__ (World cache, Job, export), query, plugins, data, __main__ (CLI), gui/
@@ -112,6 +116,8 @@ new behaviour "looks" better.
   (`BiomeManager` zoom).
 - **M3:** structure pieces (mineshaft depth exact, village layouts, loot), features and decoration
   (trees, sugar cane, cacti, ores, geodes).
+- **GPU biomes (done):** climate and biomes on the device, lowered `biome(...)` and structure start
+  columns (whole seeds only), two-stage filter; 3.5-7x on biome-heavy queries.
 - **GPU batch (done):** CUDA seed-only pre-filter and crack brute force, block query builder and
   wizard, in-app help and tour, jungle temple loot, search progress/estimate fixes.
 - **M4:** carvers and full block-level generation; Nether/End.

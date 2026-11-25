@@ -21,6 +21,8 @@ const PTX: Option<&str> = Some(concat!(include_str!(concat!(env!("OUT_DIR"), "/g
 const PTX: Option<&str> = None;
 
 const ATOM: usize = 24;
+/// Threads per block in the biome stage (one seed per block).
+const BIO_THREADS: u32 = 128;
 const PROG_INTS: usize = 4096;
 type Atom = [i32; ATOM];
 type Ptr = u64;
@@ -101,6 +103,9 @@ struct Bufs {
     out: Ptr,
     out_bytes: usize,
     count: Ptr,
+    /// Stage-2 results (biome checks over stage-1 survivors).
+    out2: Ptr,
+    out2_bytes: usize,
 }
 
 pub struct Gpu {
@@ -178,7 +183,7 @@ impl Gpu {
             }
             let mut count = 0;
             api.ok((api.cuMemAlloc)(&mut count, 4), "cuMemAlloc")?;
-            Ok(Gpu { api, ctx, filter, filter_bio, crack, biomes, prog, clim, deep_stack: Mutex::new(false), bufs: Mutex::new(Bufs { out: 0, out_bytes: 0, count }), name })
+            Ok(Gpu { api, ctx, filter, filter_bio, crack, biomes, prog, clim, deep_stack: Mutex::new(false), bufs: Mutex::new(Bufs { out: 0, out_bytes: 0, count, out2: 0, out2_bytes: 0 }), name })
         }
     }
 
@@ -200,11 +205,15 @@ impl Gpu {
 
     /// Launches `f` over `n` threads, waits, and returns the survivor count. Caller holds the lock.
     unsafe fn launch(&self, b: &Bufs, f: *mut c_void, n: u64, args: &mut [*mut c_void]) -> Result<u32, String> {
+        self.launch_blocks(b, f, n.div_ceil(256), 256, args)
+    }
+
+    /// As `launch`, with `blocks` blocks of `threads` threads.
+    unsafe fn launch_blocks(&self, b: &Bufs, f: *mut c_void, blocks: u64, threads: u32, args: &mut [*mut c_void]) -> Result<u32, String> {
         let a = &self.api;
         let zero = 0u32;
         a.ok((a.cuMemcpyHtoD)(b.count, &zero as *const u32 as *const c_void, 4), "reset")?;
-        let blocks = n.div_ceil(256) as c_uint;
-        a.ok((a.cuLaunchKernel)(f, blocks, 1, 1, 256, 1, 1, 0, std::ptr::null_mut(), args.as_mut_ptr(), std::ptr::null_mut()), "launch")?;
+        a.ok((a.cuLaunchKernel)(f, blocks as c_uint, 1, 1, threads, 1, 1, 0, std::ptr::null_mut(), args.as_mut_ptr(), std::ptr::null_mut()), "launch")?;
         a.ok((a.cuCtxSynchronize)(), "kernel")?;
         let mut count = 0u32;
         a.ok((a.cuMemcpyDtoH)(&mut count as *mut u32 as *mut c_void, b.count, 4), "count")?;
@@ -245,8 +254,8 @@ impl Gpu {
         let a = &self.api;
         let mut deep = self.deep_stack.lock().unwrap();
         if !*deep {
-            // ~14 KB of climate state per thread plus the sampler recursion (see gpu.cu `Cl`)
-            a.ok((a.cuCtxSetLimit)(0, 32 << 10), "stack for biome checks (not enough GPU memory?)")?;
+            // the sampler, spline and R-tree recursion (gpu.cu `sample`)
+            a.ok((a.cuCtxSetLimit)(0, 16 << 10), "stack for biome checks (not enough GPU memory?)")?;
             *deep = true;
         }
         a.ok((a.cuMemcpyHtoD)(self.clim, &clim.c as *const ClimC as *const c_void, std::mem::size_of::<ClimC>()), "climate upload")
@@ -268,9 +277,9 @@ impl Gpu {
             let res = (|| {
                 a.ok((a.cuMemcpyHtoD)(sd, seeds.as_ptr() as *const c_void, n * 8), "seeds")?;
                 a.ok((a.cuMemcpyHtoD)(pd, quarts.as_ptr() as *const c_void, n * 12), "positions")?;
-                let (mut s, mut p, mut nn, mut out) = (sd, pd, n as u64, b.out);
-                let mut args: [*mut c_void; 4] = [&mut s as *mut _ as _, &mut p as *mut _ as _, &mut nn as *mut _ as _, &mut out as *mut _ as _];
-                self.launch(&b, self.biomes, n as u64, &mut args)?;
+                let (mut s, mut p, mut out) = (sd, pd, b.out);
+                let mut args: [*mut c_void; 3] = [&mut s as *mut _ as _, &mut p as *mut _ as _, &mut out as *mut _ as _];
+                self.launch_blocks(&b, self.biomes, n as u64, 64, &mut args)?;
                 let mut v = vec![0i32; n];
                 a.ok((a.cuMemcpyDtoH)(v.as_mut_ptr() as *mut c_void, b.out, n * 4), "results")?;
                 Ok(v)
@@ -299,9 +308,29 @@ impl Gpu {
                 &mut lo as *mut _ as _, &mut n as *mut _ as _, &mut mode as *mut _ as _, &mut base as *mut _ as _,
                 &mut total as *mut _ as _, &mut key as *mut _ as _, &mut out as *mut _ as _, &mut count as *mut _ as _, &mut cap as *mut _ as _,
             ];
-            let k = self.launch(&b, if clim.is_some() { self.filter_bio } else { self.filter }, n, &mut args)?.min(cap) as usize;
+            let mut k = self.launch(&b, self.filter, n, &mut args)?.min(cap) as usize;
+            let mut res = b.out;
+            if clim.is_some() && k > 0 {
+                // stage 2: a block per survivor checks the biomes
+                let a = &self.api;
+                if b.out2_bytes < k * 4 {
+                    if b.out2 != 0 {
+                        (a.cuMemFree)(b.out2);
+                    }
+                    b.out2_bytes = 0;
+                    a.ok((a.cuMemAlloc)(&mut b.out2, b.out_bytes), "cuMemAlloc")?;
+                    b.out2_bytes = b.out_bytes;
+                }
+                let (mut surv, mut out2) = (b.out, b.out2);
+                let mut args: [*mut c_void; 9] = [
+                    &mut surv as *mut _ as _, &mut lo as *mut _ as _, &mut mode as *mut _ as _, &mut base as *mut _ as _,
+                    &mut total as *mut _ as _, &mut key as *mut _ as _, &mut out2 as *mut _ as _, &mut count as *mut _ as _, &mut cap as *mut _ as _,
+                ];
+                k = self.launch_blocks(&b, self.filter_bio, k as u64, BIO_THREADS, &mut args)?.min(cap) as usize;
+                res = b.out2;
+            }
             let mut v = vec![0u32; k];
-            self.api.ok((self.api.cuMemcpyDtoH)(v.as_mut_ptr() as *mut c_void, b.out, k * 4), "results")?;
+            self.api.ok((self.api.cuMemcpyDtoH)(v.as_mut_ptr() as *mut c_void, res, k * 4), "results")?;
             v.sort_unstable();
             Ok(v)
         }
@@ -339,7 +368,7 @@ impl Gpu {
                     found.extend(v);
                     done.fetch_add(n, Relaxed);
                     lo += n;
-                    batch = next_batch(batch, t, 1 << 34);
+                    batch = next_batch(batch, t, 1024, 1 << 34);
                 }
                 Ok(())
             })();
@@ -352,9 +381,9 @@ impl Gpu {
 
 /// Launch sizes follow the measured speed (~50 ms per launch) so slow programs stay responsive and
 /// clear of the display driver watchdog (2 s on Windows).
-pub fn next_batch(batch: u64, started: Instant, max: u64) -> u64 {
+pub fn next_batch(batch: u64, started: Instant, min: u64, max: u64) -> u64 {
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    if ms < 25.0 { (batch * 2).min(max) } else if ms > 100.0 { (batch / 2).max(1024) } else { batch }
+    if ms < 25.0 { (batch * 2).min(max) } else if ms > 100.0 { (batch / 2).max(min) } else { batch }
 }
 
 /// gpu.cu `Clim`: device pointers to a ClimateProgram's arrays.
@@ -765,16 +794,47 @@ fn count_atom(w: &World, s: &Sel, at: (i32, i32), within: i32, min: f64) -> Opti
     Some(a)
 }
 
-/// Clauses (each an OR of atoms) that every seed passing `c` satisfies.
-fn clauses(w: &World, c: &Cond) -> Vec<Vec<Atom>> {
+/// A count atom whose starts must also have a column allowing their biomes (full seeds only).
+fn with_column(w: &World, s: &Sel, mut a: Atom) -> Atom {
+    if let Some((off, biomes)) = w.structures.gpu_column(s.set, s.only) {
+        let (min_y, max_y) = (w.min_y, w.min_y + w.height - 1);
+        a[16] = 1;
+        a[17] = off;
+        a[18..22].copy_from_slice(&set_ints(biomes));
+        a[22] = (min_y - 1) >> 2;
+        a[23] = max_y >> 2;
+    }
+    a
+}
+
+fn set_ints(b: u128) -> [i32; 4] {
+    std::array::from_fn(|i| (b >> (32 * i)) as u32 as i32)
+}
+
+fn f64_ints(v: f64) -> [i32; 2] {
+    [v.to_bits() as u32 as i32, (v.to_bits() >> 32) as u32 as i32]
+}
+
+/// Clauses (each an OR of atoms) that every seed passing `c` satisfies. `full`: the GPU sees whole
+/// 64-bit seeds (not structure seeds), so biome atoms can be used.
+fn clauses(w: &World, c: &Cond, full: bool) -> Vec<Vec<Atom>> {
     let one = |a: Option<Atom>| a.map(|a| vec![a]).into_iter().collect::<Vec<_>>();
     match c {
-        Cond::And(v) => v.iter().flat_map(|c| clauses(w, c)).collect(),
+        Cond::And(v) => v.iter().flat_map(|c| clauses(w, c, full)).collect(),
         // (a1 and a2) or b implies a1 or b: one clause per branch, if every branch has one
-        Cond::Or(v) => v.iter().map(|c| clauses(w, c).into_iter().next()).collect::<Option<Vec<_>>>().map(|f| vec![f.concat()]).unwrap_or_default(),
+        Cond::Or(v) => v.iter().map(|c| clauses(w, c, full).into_iter().next()).collect::<Option<Vec<_>>>().map(|f| vec![f.concat()]).unwrap_or_default(),
+        Cond::Metric { m: Metric::Biome { biomes, at, within, y, step }, min, max } if full && *step > 0 && *within >= 0 => {
+            let mut a = [0; ATOM];
+            a[0] = 4;
+            a[1..5].copy_from_slice(&set_ints(*biomes));
+            a[5..10].copy_from_slice(&[at.0, at.1, *within, *y, *step]);
+            a[10..12].copy_from_slice(&f64_ints(*min));
+            a[12..14].copy_from_slice(&f64_ints(*max));
+            vec![vec![a]]
+        }
         Cond::Metric { m, min, .. } if *min >= 1.0 => match m {
-            Metric::Count { s, at, within } => one(count_atom(w, s, *at, *within, *min)),
-            Metric::Loot { s, at, within, .. } => one(count_atom(w, s, *at, *within, 1.0)),
+            Metric::Count { s, at, within } => one(count_atom(w, s, *at, *within, *min).map(|a| if full { with_column(w, s, a) } else { a })),
+            Metric::Loot { s, at, within, .. } => one(count_atom(w, s, *at, *within, 1.0).map(|a| if full { with_column(w, s, a) } else { a })),
             Metric::Portal { set, at, within, .. } => one(count_atom(w, &Sel { set: *set, only: None, biomes: None, tags: vec![] }, *at, *within, 1.0)),
             // as in Eval::pre: starts sit up to ~128 blocks from their locate position
             Metric::Near { a, b, dist, at, within } => {
@@ -803,7 +863,8 @@ fn clauses(w: &World, c: &Cond) -> Vec<Vec<Atom>> {
 }
 
 fn encode(mut cl: Vec<Vec<Atom>>) -> Vec<i32> {
-    cl.sort_by_key(|c| c.iter().any(|a| a[0] == 1 || a[0] == 3)); // slime and cluster scans are the expensive ones: last
+    // cheapest first: placement, then slime and cluster scans, then anything reading biomes
+    cl.sort_by_key(|c| c.iter().map(|a| if a[0] == 4 || a[16] != 0 { 2 } else if a[0] == 1 || a[0] == 3 { 1 } else { 0 }).max());
     let mut p = vec![0];
     for c in cl {
         if p.len() + 1 + c.len() * ATOM > PROG_INTS {
@@ -816,9 +877,29 @@ fn encode(mut cl: Vec<Vec<Atom>>) -> Vec<i32> {
     if p[0] == 0 { vec![] } else { p }
 }
 
-/// The GPU program for a query; empty when nothing in it is seed-only.
-pub fn program(w: &World, c: &Cond) -> Vec<i32> {
-    encode(clauses(w, c))
+/// The GPU program for a query; empty when nothing in it can be checked on the GPU. `full`: the
+/// units are whole seeds, so biome checks can be lowered too (not in structure-seed mode).
+pub fn program(w: &World, c: &Cond, full: bool) -> Vec<i32> {
+    encode(clauses(w, c, full))
+}
+
+/// Whether a program reads biomes (it then needs a ClimDev and the filter_bio kernel).
+pub fn uses_climate(prog: &[i32]) -> bool {
+    if prog.is_empty() {
+        return false;
+    }
+    let mut k = 1;
+    for _ in 0..prog[0] {
+        let na = prog[k] as usize;
+        k += 1;
+        for a in prog[k..k + na * ATOM].chunks(ATOM) {
+            if a[0] == 4 || (a[0] == 0 && a[16] != 0) {
+                return true;
+            }
+        }
+        k += na * ATOM;
+    }
+    false
 }
 
 /// Crack program: every observed start's grid cell lands on its chunk ([spacing, sep, tri, salt, gx, gz, cx, cz]).

@@ -210,7 +210,7 @@ pub struct Search {
     /// First engine panic (unit and message); the search stops when one happens.
     pub error: Mutex<Option<String>>,
     /// GPU pre-filter: device and program (see `use_gpu`).
-    gpu: Option<(Arc<gpu::Gpu>, Vec<i32>)>,
+    gpu: Option<(Arc<gpu::Gpu>, Vec<i32>, Option<gpu::ClimDev>)>,
     /// Visit the units in shuffled order with this key (`permute`); resume points stay valid.
     pub shuffle: Option<u64>,
     /// The last resume point, and the unit ranges past it that other workers had already finished
@@ -402,7 +402,7 @@ impl Search {
             }
         }
         let resume = match &self.gpu {
-            Some((g, prog)) => self.run_gpu(g, prog, from, to, threads),
+            Some((g, prog, clim)) => self.run_gpu(g, prog, clim.as_ref(), from, to, threads),
             // few units of 65536 sisters each: share every unit among all threads
             None => from + self.run_cpu(to - from, if matches!(self.mode, Mode::StructureList(_)) { 16 } else { 1 }, &|p| from + p, &|_| 0, threads),
         };
@@ -412,7 +412,7 @@ impl Search {
 
     /// Batches of units go through the GPU program; the CPU then checks the survivors as usual. The
     /// GPU filters the next batch while the CPU works on this one.
-    fn run_gpu(&self, g: &gpu::Gpu, prog: &[i32], from: u64, to: u64, threads: usize) -> u64 {
+    fn run_gpu(&self, g: &gpu::Gpu, prog: &[i32], clim: Option<&gpu::ClimDev>, from: u64, to: u64, threads: usize) -> u64 {
         let (mode, base) = match self.mode {
             Mode::Range { start, .. } => (0, start as u64),
             Mode::StructureSeeds { start, .. } => (1, start),
@@ -425,11 +425,13 @@ impl Search {
         let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, u64, Vec<u32>)>(1);
         std::thread::scope(|sc| {
             sc.spawn(move || {
-                let (mut lo, mut batch) = (from, 1u64 << 16);
+                // biome checks can cost milliseconds per seed: start small (the display watchdog is 2 s)
+                let (min, start) = if clim.is_some() { (32, 256) } else { (1024, 1u64 << 16) };
+                let (mut lo, mut batch) = (from, start);
                 while lo < to && !self.stop.load(Relaxed) {
                     let hi = (lo + batch).min(to);
                     let t = Instant::now();
-                    match g.filter(prog, None, mode, base, lo, hi - lo, shuffle) {
+                    match g.filter(prog, clim, mode, base, lo, hi - lo, shuffle) {
                         // a closed channel means the CPU side stopped
                         Ok(surv) => if tx.send((lo, hi, surv)).is_err() { return },
                         Err(e) => {
@@ -438,7 +440,7 @@ impl Search {
                             return;
                         }
                     }
-                    batch = gpu::next_batch(batch, t, 1 << 24);
+                    batch = gpu::next_batch(batch, t, min, 1 << 24);
                     lo = hi;
                 }
             });
@@ -545,13 +547,32 @@ impl Search {
         if matches!(self.mode, Mode::List(_) | Mode::StructureList(_)) {
             return Err("seed lists run on the CPU".into());
         }
-        let prog = gpu::program(&self.world, &self.cond);
+        // structure seeds are not whole seeds: biomes are checked on the CPU, per sister
+        let full = !matches!(self.mode, Mode::StructureSeeds { .. });
+        let mut prog = gpu::program(&self.world, &self.cond, full);
         if prog.is_empty() {
-            return Err("nothing in this query depends on the seed alone (structure placement, slime chunks)".into());
+            return Err("nothing in this query can be checked on the GPU (structure placement, slime chunks, biomes)".into());
         }
         let g = gpu::get()?;
-        let name = g.name.clone();
-        self.gpu = Some((g, prog));
+        let mut name = g.name.clone();
+        let mut clim = None;
+        if gpu::uses_climate(&prog) {
+            match gpu::ClimateProgram::new(&self.world).and_then(|p| g.upload_climate(&p)) {
+                Ok(c) => {
+                    clim = Some(c);
+                    name += " (with biomes)";
+                }
+                // without the climate the program keeps its placement checks
+                Err(e) => {
+                    prog = gpu::program(&self.world, &self.cond, false);
+                    if prog.is_empty() {
+                        return Err(format!("biome checks cannot run on the GPU: {e}"));
+                    }
+                    name += &format!(" (biomes on the CPU: {e})");
+                }
+            }
+        }
+        self.gpu = Some((g, prog, clim));
         Ok(name)
     }
 

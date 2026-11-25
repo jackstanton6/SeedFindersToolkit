@@ -24,6 +24,7 @@ world.
 | Mineshaft depth | approximate (placement exact) | M3 |
 | Spawn point, surface blocks, features (trees, cane, cacti, ores), carvers, full blocks | planned | M2 to M4 |
 | CUDA pre-filter (structure placement, slime chunks) and crack brute force | done | GPU keeps exactly the CPU pre-check's seeds (2^20 seeds × 11 queries × 3 modes) |
+| GPU biomes (climate noises, samplers and R-tree on the device; `biome(...)` and structure start columns) | done | 200k random lookups match `Seeded::biome`; every CPU match survives (11 queries × 2 modes) |
 
 Each "verified" row means an oracle test that runs the actual 26.3 server classes passes with zero
 mismatches. See [sft/docs/Accuracy.md](sft/docs/Accuracy.md).

@@ -200,33 +200,35 @@ __device__ float perlin_get(const Perl &pl, double x, double y, double z) {
                      lerpf(ay, lerpf(ax, d001, d101), lerpf(ax, d011, d111)));
 }
 
-// Per-seed climate state: every layer's Perlin, and the cache-node memo (value + position per slot)
+// Per-seed climate: every layer's Perlin (shared by a block working on one seed), and this thread's
+// cache-node memo (value and position per slot)
 struct Cl {
-    Perl pl[MAX_LAYERS];
+    const Perl *pl;
     float memo[MAX_CACHES];
     int mx[MAX_CACHES], my[MAX_CACHES], mz[MAX_CACHES];
     unsigned valid;
 };
 
 // RandomState for a seed: Xoroshiro(seed).forkPositional(), then per noise fromHashOf(id) and
-// NormalNoise.create's two forks, each octave's layer from its name.
-__device__ void cl_init(Cl &c, i64 seed) {
+// NormalNoise.create's two forks, each octave's layer from its name. The block's threads build the
+// layers in parallel; every thread must call it.
+__device__ void layers_init(Perl *pl, i64 seed) {
     XR r;
     u64 lo = (u64)seed ^ 0x6A09E667F3BCC909ULL;
     xr_from(r, mix13(lo), mix13(lo + 0x9E3779B97F4A7C15ULL));
     u64 plo = xr_next(r), phi = xr_next(r);
-    for (int n = 0; n < CLIM.nnoise; n++) {
+    for (int l = threadIdx.x; l < CLIM.nlayer; l += blockDim.x) {
+        int n = 0;
+        while (l >= CLIM.noise[2 * n] + CLIM.noise[2 * n + 1]) n++;
         XR nr;
         xr_from(nr, CLIM.noise_md5[2 * n] ^ plo, CLIM.noise_md5[2 * n + 1] ^ phi);
         u64 flo = xr_next(nr), fhi = xr_next(nr), slo = xr_next(nr), shi = xr_next(nr);
-        for (int l = CLIM.noise[2 * n]; l < CLIM.noise[2 * n] + CLIM.noise[2 * n + 1]; l++) {
-            XR lr;
-            bool second = CLIM.layer_second[l];
-            xr_from(lr, CLIM.layer_md5[2 * l] ^ (second ? slo : flo), CLIM.layer_md5[2 * l + 1] ^ (second ? shi : fhi));
-            perlin_init(c.pl[l], lr);
-        }
+        XR lr;
+        bool second = CLIM.layer_second[l];
+        xr_from(lr, CLIM.layer_md5[2 * l] ^ (second ? slo : flo), CLIM.layer_md5[2 * l + 1] ^ (second ? shi : fhi));
+        perlin_init(pl[l], lr);
     }
-    c.valid = 0;
+    __syncthreads();
 }
 
 // NoiseStack.get: float accumulation over the noise's layers
@@ -313,6 +315,13 @@ __device__ float spline_eval(Cl &c, int sp, const int *coords, float *cache, int
     return lerpf(t, y1, y2) + t * (1.0f - t) * lerpf(t, a, b);
 }
 
+// S::Spline, in its own frame so the coordinate cache does not weigh on every sample() call
+__device__ __noinline__ float sample_spline(Cl &c, const int *n, int x, int y, int z) {
+    float cache[32];
+    for (int j = 0; j < 32; j++) cache[j] = __int_as_float(0x7fc00000);
+    return spline_eval(c, n[4], CLIM.aux + n[5], cache, x, y, z);
+}
+
 // density.rs S::sample
 __device__ float sample(Cl &c, int id, int x, int y, int z) {
     const int *n = CLIM.node + id * NODE;
@@ -377,11 +386,7 @@ __device__ float sample(Cl &c, int id, int x, int y, int z) {
         for (int j = 0; j < n[7]; j++) if (v < K(n[6] + j)) { k = j; break; }
         return sample(c, CLIM.aux[n[4] + k], x, y, z);
     }
-    case 27: {
-        float cache[32];
-        for (int j = 0; j < 32; j++) cache[j] = __int_as_float(0x7fc00000);
-        return spline_eval(c, n[4], CLIM.aux + n[5], cache, x, y, z);
-    }
+    case 27: return sample_spline(c, n, x, y, z);
     case 28: {
         // a cache node: the same value for the same position (y ignored when it does not depend on y)
         int slot = n[4];
@@ -438,42 +443,71 @@ __device__ int search_node(int id, const i64 *t, int cand) {
     return best;
 }
 
-// Another leaf at distance `d` with a different biome: then the warm start (which the CPU keeps
-// per query order) can change the answer, so the caller must treat the biome as unknown.
-__device__ bool tie(int id, const i64 *t, i64 d, int biome) {
-    const int *n = CLIM.tree + id * 4;
-    if (n[0] >= 0) return space_dist(n[3], t) == d && CLIM.leaf_biome[n[0]] != biome;
-    for (int j = 0; j < n[2]; j++) {
-        int k = CLIM.kids[n[1] + j];
-        if (space_dist(CLIM.tree[k * 4 + 3], t) <= d && tie(k, t, d, biome)) return true;
-    }
-    return false;
+// A set of biome ids (BiomeSet, 128 bits)
+struct Bs { unsigned w[4]; };
+__device__ __forceinline__ void bs_add(Bs &s, int b) { s.w[b >> 5] |= 1u << (b & 31); }
+__device__ __forceinline__ bool bs_meets(const Bs &s, const int *set) {
+    return (s.w[0] & set[0]) | (s.w[1] & set[1]) | (s.w[2] & set[2]) | (s.w[3] & set[3]);
+}
+__device__ __forceinline__ bool bs_within(const Bs &s, const int *set) {
+    return !((s.w[0] & ~set[0]) | (s.w[1] & ~set[1]) | (s.w[2] & ~set[2]) | (s.w[3] & ~set[3]));
 }
 
-// world.rs Seeded::biome with a fresh context: the biome at a quart, or -1 when a tie makes it unsure
-__device__ int biome_at(Cl &c, int qx, int qy, int qz) {
+// The biomes of every leaf at distance `d`: when there are several, the warm start (which the CPU
+// keeps in query order) decides between them, so the caller must allow any of them.
+__device__ void ties(int id, const i64 *t, i64 d, Bs &out) {
+    const int *n = CLIM.tree + id * 4;
+    if (n[0] >= 0) {
+        if (space_dist(n[3], t) == d) bs_add(out, CLIM.leaf_biome[n[0]]);
+        return;
+    }
+    for (int j = 0; j < n[2]; j++) {
+        int k = CLIM.kids[n[1] + j];
+        if (space_dist(CLIM.tree[k * 4 + 3], t) <= d) ties(k, t, d, out);
+    }
+}
+
+// world.rs Seeded::biome: the biome a fresh context finds at a quart (`fresh`), and every biome
+// some warm start could give (`any`, which has `fresh` and usually nothing else)
+__device__ void biome_at(Cl &c, int qx, int qy, int qz, int &fresh, Bs &any) {
     i64 t[7];
     for (int k = 0; k < 6; k++) t[k] = quantize(sample(c, CLIM.roots[k], qx << 2, qy << 2, qz << 2));
     t[6] = 0;
     int leaf = search_node(0, t, -1);
-    int b = CLIM.leaf_biome[leaf];
-    return tie(0, t, space_dist(leaf, t), b) ? -1 : b;
+    fresh = CLIM.leaf_biome[leaf];
+    any = Bs{{0, 0, 0, 0}};
+    ties(0, t, space_dist(leaf, t), any);
 }
 
-__device__ __forceinline__ bool in_set(const int *set, int b) { return b < 0 || ((unsigned)set[b >> 5] >> (b & 31) & 1); }
-
-struct Lazy { Cl *c; i64 seed; bool ready; };
+// The climate of the seed being evaluated: null in the thread-per-seed `filter` kernel, where
+// biome checks pass (a superset); in `filter_bio` a whole block evaluates one seed, every thread
+// taking the same path, and shares the biome lookups out.
+struct Lazy { Cl *c; Perl *pl; i64 seed; bool ready; };
 __device__ __forceinline__ Cl &climate(Lazy &l) {
-    if (!l.ready) { cl_init(*l.c, l.seed); l.ready = true; }
+    if (!l.ready) {
+        layers_init(l.pl, l.seed);
+        l.c->pl = l.pl;
+        l.c->valid = 0;
+        l.ready = true;
+    }
     return *l.c;
 }
 
 // structure.rs column_ok: some quart of the start column allows the structure (unsure counts as yes)
 __device__ bool column_ok(Lazy &l, const int *a, int cx, int cz) {
+    if (!l.c) return true;
     int x = cx * 16 + a[17], z = cz * 16 + a[17];
     Cl &c = climate(l);
-    for (int qy = a[23]; qy >= a[22]; qy--) {
-        if (in_set(a + 18, biome_at(c, x >> 2, qy, z >> 2))) return true;
+    for (int top = a[23]; top >= a[22]; top -= blockDim.x) {
+        int qy = top - (int)threadIdx.x;
+        bool f = false;
+        if (qy >= a[22]) {
+            int b;
+            Bs any;
+            biome_at(c, x >> 2, qy, z >> 2, b, any);
+            f = bs_meets(any, a + 18);
+        }
+        if (__syncthreads_or(f)) return true;
     }
     return false;
 }
@@ -494,20 +528,31 @@ __device__ bool biome_atom(Lazy &l, const int *a) {
             len += dx * dx + dz * dz <= w2;
         }
     double total = (double)(len > 1 ? len : 1);
+    if (!l.c) return true;
     Cl &c = climate(l);
     int lo = 0, hi = 0, left = len;
-    for (int j = 0; j < n; j++)
-        for (int i = 0; i < n; i++) {
-            i64 dx = x0 + i * step - ax, dz = z0 + j * step - az;
-            if (dx * dx + dz * dz > w2) continue;
-            int b = biome_at(c, (x0 + i * step) >> 2, y >> 2, (z0 + j * step) >> 2);
-            left--;
-            if (b < 0) hi++;
-            else if (in_set(a + 1, b)) { lo++; hi++; }
-            // decided early: the upper bound already reaches min and the lower can no longer pass max
-            if ((double)hi / total >= mn && (double)(lo + 0) / total <= mx && (double)(lo + left) / total <= mx) return true;
-            if ((double)(hi + left) / total < mn || (double)lo / total > mx) return false;
+    // the block takes the grid points blockDim at a time
+    for (int k0 = 0; k0 < n * n; k0 += blockDim.x) {
+        int k = k0 + (int)threadIdx.x, i = k % n, j = k / n;
+        i64 dx = x0 + i * step - ax, dz = z0 + j * step - az;
+        bool in_disc = k < n * n && dx * dx + dz * dz <= w2;
+        bool sure_in = false, maybe_in = false;
+        if (in_disc) {
+            int b;
+            Bs any;
+            biome_at(c, (x0 + i * step) >> 2, y >> 2, (z0 + j * step) >> 2, b, any);
+            sure_in = bs_within(any, a + 1);
+            maybe_in = bs_meets(any, a + 1);
         }
+        int sure = __syncthreads_count(sure_in);
+        int unsure = __syncthreads_count(maybe_in && !sure_in);
+        left -= __syncthreads_count(in_disc);
+        lo += sure;
+        hi += sure + unsure;
+        // decided early: the upper bound already reaches min and the lower can no longer pass max
+        if ((double)hi / total >= mn && (double)(lo + left) / total <= mx) return true;
+        if ((double)(hi + left) / total < mn || (double)lo / total > mx) return false;
+    }
     return (double)hi / total >= mn && (double)lo / total <= mx;
 }
 
@@ -671,26 +716,36 @@ __device__ u64 permute(u64 i, u64 n, u64 key) {
 // Units lo..lo+n of a search (shuffled by permute(unit, total, key) when total > 0); passing offsets
 // (unordered) go to out. mode: 0 range (seed = base + unit), 1 structure seeds (low 48 bits of
 // base + unit), 2 random (splitmix(base + unit), base = generator seed).
-__device__ __forceinline__ void filter_one(u64 lo, u64 n, int mode, u64 base, u64 total, u64 key, unsigned *out, unsigned *count, unsigned cap, Cl *c) {
+__device__ __forceinline__ i64 unit_seed(u64 lo, u64 i, int mode, u64 base, u64 total, u64 key) {
+    u64 u = (total ? permute(lo + i, total, key) : lo + i) + base;
+    return mode == 2 ? (i64)splitmix(u) : mode == 1 ? (i64)(u & MASK48) : (i64)u;
+}
+
+// Stage 1, a thread per unit: placement atoms (biome checks pass here).
+extern "C" __global__ void filter(u64 lo, u64 n, int mode, u64 base, u64 total, u64 key, unsigned *out, unsigned *count, unsigned cap) {
     u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    u64 u = (total ? permute(lo + i, total, key) : lo + i) + base;
-    i64 seed = mode == 2 ? (i64)splitmix(u) : mode == 1 ? (i64)(u & MASK48) : (i64)u;
-    Lazy l = {c, seed, false};
+    i64 seed = unit_seed(lo, i, mode, base, total, key);
+    Lazy l = {nullptr, nullptr, seed, false};
     if (eval(seed, l)) {
         unsigned k = atomicAdd(count, 1u);
         if (k < cap) out[k] = (unsigned)i;
     }
 }
 
-extern "C" __global__ void filter(u64 lo, u64 n, int mode, u64 base, u64 total, u64 key, unsigned *out, unsigned *count, unsigned cap) {
-    filter_one(lo, n, mode, base, total, key, out, count, cap, nullptr);
-}
-
-// filter for programs with biome atoms: each thread holds a seed's climate state (~14 KB of stack)
-extern "C" __global__ void filter_bio(u64 lo, u64 n, int mode, u64 base, u64 total, u64 key, unsigned *out, unsigned *count, unsigned cap) {
+// Stage 2, a block per stage-1 survivor: the whole program with biome checks. The seed's Perlin
+// layers live in shared memory; every thread runs the same path and takes a share of the lookups.
+extern "C" __global__ void filter_bio(const unsigned *surv, u64 lo, int mode, u64 base, u64 total, u64 key, unsigned *out, unsigned *count, unsigned cap) {
+    __shared__ Perl pl[MAX_LAYERS];
+    unsigned i = surv[blockIdx.x];
+    i64 seed = unit_seed(lo, i, mode, base, total, key);
     Cl c;
-    filter_one(lo, n, mode, base, total, key, out, count, cap, &c);
+    Lazy l = {&c, pl, seed, false};
+    bool ok = eval(seed, l);
+    if (ok && threadIdx.x == 0) {
+        unsigned k = atomicAdd(count, 1u);
+        if (k < cap) out[k] = i;
+    }
 }
 
 // Crack brute force: index idx -> seed (idx / nlows) << bits | lows[idx % nlows], for idx in base..base+n.
@@ -699,18 +754,27 @@ extern "C" __global__ void crack(const i64 *lows, u64 nlows, int bits, u64 base,
     if (i >= n) return;
     u64 idx = base + i;
     i64 seed = (i64)(((idx / nlows) << bits) | (u64)lows[idx % nlows]);
-    Lazy l = {nullptr, seed, false};  // crack programs have no biome atoms
+    Lazy l = {nullptr, nullptr, seed, false};  // crack programs have no biome atoms
     if (eval(seed, l)) {
         unsigned k = atomicAdd(count, 1u);
         if (k < cap) out[k] = seed;
     }
 }
 
-// Parity: Seeded::biome (fresh context) for n (seed, quart) pairs; out = biome, or -1 when unsure.
-extern "C" __global__ void biomes(const i64 *seeds, const int *pos, u64 n, int *out) {
-    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    Cl c;
-    cl_init(c, seeds[i]);
-    out[i] = biome_at(c, pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]);
+// Parity: Seeded::biome (fresh context) for (seed, quart) pairs, a block per pair; out = biome, or -1
+// when unsure.
+extern "C" __global__ void biomes(const i64 *seeds, const int *pos, int *out) {
+    __shared__ Perl pl[MAX_LAYERS];
+    unsigned i = blockIdx.x;
+    layers_init(pl, seeds[i]);
+    if (threadIdx.x == 0) {
+        Cl c;
+        c.pl = pl;
+        c.valid = 0;
+        int b;
+        Bs any;
+        biome_at(c, pos[3 * i], pos[3 * i + 1], pos[3 * i + 2], b, any);
+        any.w[b >> 5] &= ~(1u << (b & 31));
+        out[i] = (any.w[0] | any.w[1] | any.w[2] | any.w[3]) ? -1 : b;  // -1: a tie with another biome
+    }
 }

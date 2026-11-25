@@ -185,6 +185,24 @@ def test_two_islands_keep_their_own_details():
         json.dumps({"op": "island", "within": 3000}), json.dumps({"min_circularity": 0.1, "op": "island", "within": 3000})}, islands
 
 
+def test_gpu_biome_checks_find_the_same_seeds():
+    if not sft.cuda_status()[0]:
+        print("  (no CUDA device: GPU biome test skipped)")
+        return
+    q = "desert_pyramid(within=300) and biome('desert', within=200) and not biome('#is_ocean', within=500)"
+    found = {}
+    for gpu in (False, True):
+        job = sft.Job("26.3", q, "range", 1 << 33, 50_000, gpu=gpu)
+        job.start(8)
+        job.join()
+        found[gpu] = sorted(s for s, _ in job.poll())
+        if gpu:
+            assert "with biomes" in job.gpu_note, job.gpu_note
+    assert found[True] == found[False] and found[True], (len(found[True]), len(found[False]))
+    note = sft.Job("26.3", q, "structure_seeds", 0, 10, gpu=True).gpu_note
+    assert "with biomes" not in note, note  # structure seeds are not whole seeds: biomes stay on the CPU
+
+
 def test_cli_edge_cases():
     import subprocess
     import tempfile
@@ -207,5 +225,6 @@ if __name__ == "__main__":
     test_loot_without_tables_is_refused()
     test_check_and_scan_run_plugins_like_a_search()
     test_two_islands_keep_their_own_details()
+    test_gpu_biome_checks_find_the_same_seeds()
     test_cli_edge_cases()
     print("ok")
