@@ -79,6 +79,13 @@ def main():
     next(b for b in sb.findChildren(QPushButton) if b.text() == "search sisters").click()
     assert w.mode.currentText().startswith("upper 16") and int(w.fixed.text()) == low and w.hi.text() == "65535"
 
+    # re-check runs py(...) terms like a search does (they used to be dropped)
+    ed.set_text('py("example_python.seed_contains", text="7")')
+    w._recheck(17)
+    assert w.log.toPlainText().splitlines()[-1].endswith("re-check 17: match []"), w.log.toPlainText().splitlines()[-1]
+    w._recheck(18)
+    assert w.log.toPlainText().splitlines()[-1].endswith("re-check 18: NO MATCH")
+
     # Estimate replaces the job: Resume must not continue the old search's resume point or keep its rows
     w.resume_unit = 1234
     w.estimate()

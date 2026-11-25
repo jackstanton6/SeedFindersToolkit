@@ -159,6 +159,22 @@ def test_loot_without_tables_is_refused():
         shutil.rmtree(d.parent)
 
 
+def test_check_and_scan_run_plugins_like_a_search():
+    # native(...) and py(...) terms: check and scan must agree with a search over the same seeds
+    q = 'village(within=2000) and native("example_rust", "tall_spawn", min=70) and py("example_python.seed_contains", text="7")'
+    job = sft.Job("26.3", q, "range", 0, 3000)
+    job.start(4)
+    job.join()
+    found = {s for s, _ in job.poll()}
+    assert found and job.py_rejected, (len(found), job.py_rejected)
+    assert {s for s in range(3000) if sft.check("26.3", s, q) is not None} == found
+    seed = min(found)
+    assert sft.scan("26.3", seed, q, 0, 0, 200, 100)  # the query holds at (0, 0) of a matching seed
+    no7 = next(s for s in range(3000) if "7" not in str(s))
+    assert sft.scan("26.3", no7, q, 0, 0, 200, 100) == []  # py terms are per seed: no anchor matches
+    assert sft.scan("26.3", seed, 'py("example_python.seed_contains", text="7")', 0, 0, 100, 100)  # py terms alone
+
+
 if __name__ == "__main__":
     test_mistakes_are_refused_with_a_hint()
     test_failed_branches_leave_nothing_behind()
@@ -167,4 +183,5 @@ if __name__ == "__main__":
     test_a_new_job_resumed_from_a_unit_counts_the_units_before_it()
     test_crack_runs_as_a_job()
     test_loot_without_tables_is_refused()
+    test_check_and_scan_run_plugins_like_a_search()
     print("ok")

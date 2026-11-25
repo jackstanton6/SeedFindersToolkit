@@ -38,11 +38,14 @@ world.climate(seed, x, y, z) -> [temperature, humidity, continentalness, erosion
 world.structures_near(seed, x, z, radius, names=None) -> [(structure, x, y, z, exact)]
 world.biome_map(seed, x0, z0, w, h, scale, y) -> [biome id, ...]    # row-major, z rows
 world.height_map(seed, x0, z0, w, h, scale) -> [height, ...]
-world.check(seed, query_json) -> details JSON or None
+world.check(seed, query_json, natives=[]) -> details JSON or None   # engine part only
+sft.check(version, seed, query) -> details or None                   # with native(...) and py(...) terms
+sft.scan(version, seed, query, x, z, within, step=64, anchor=None) -> [(x, z, details)]
 ```
 
 Python conditions run on the engine's matches (after the Rust stage), so they can be slow-ish but
-should still be selective. In queries they must be top-level `and` terms.
+should still be selective. In queries they must be top-level `and` terms. `check`, `scan` and the
+window's re-check run them too; they only see the seed, so in a scan they hold at every place or at none.
 
 ## Native (Rust or anything with a C ABI)
 

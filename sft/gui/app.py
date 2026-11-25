@@ -616,9 +616,12 @@ class Main(QMainWindow):
         m.exec(self.results.viewport().mapToGlobal(pos))
 
     def _recheck(self, seed: int):
-        engine_tree, _ = query.split_python(self.editor.query())
-        res = self.world.check(seed, json.dumps(engine_tree)) if engine_tree else "[]"
-        self.say(f"re-check {seed}: {'match ' + res if res is not None else 'NO MATCH'}")
+        try:
+            res = sft.check(self.version.currentText(), seed, self.editor.query(), self.loaded)
+        except Exception as e:
+            self.say(f"re-check {seed} failed: {e}")
+            return
+        self.say(f"re-check {seed}: {'match ' + json.dumps(res) if res is not None else 'NO MATCH'}")
 
     def export(self):
         if not self.job or not self.job.rows:
@@ -654,7 +657,7 @@ class Main(QMainWindow):
         step, ok = QInputDialog.getInt(self, "scan", "anchor grid step (blocks); the query is moved from the map centre to each anchor", 64, 4, 4096)
         if not ok:
             return
-        tree, _ = query.split_python(self.editor.query())
+        tree, version = self.editor.query(), self.version.currentText()
         x, z = self.map_x.value(), self.map_z.value()
         self.say(f"scanning seed {seed} within {within} of ({x}, {z})...")
 
@@ -664,8 +667,8 @@ class Main(QMainWindow):
                 return
             self.map.pins = [(hx, hz, str(i + 1)) for i, (hx, hz, _) in enumerate(hits[:200])]
             self.map.update()
-            self.say(f"scan: {len(hits)} place(s) match" + "".join(f"\n  {hx} {hz}  {summary(json.loads(d))}" for hx, hz, d in hits[:50]))
-        self._background(lambda: self.world.scan(seed, json.dumps(tree), x, z, within, step), done)
+            self.say(f"scan: {len(hits)} place(s) match" + "".join(f"\n  {hx} {hz}  {summary(d)}" for hx, hz, d in hits[:50]))
+        self._background(lambda: sft.scan(version, seed, tree, x, z, within, step, loaded=self.loaded), done)
 
     def crack(self):
         text, ok = QInputDialog.getMultiLineText(

@@ -132,12 +132,13 @@ mod py {
         }
 
         /// Evaluates a query for one seed: details JSON if it matches, else None. Queries with an
-        /// objective get a trailing {"type": "score"} entry.
-        fn check(&self, py: Python<'_>, seed: i64, query: &str) -> PyResult<Option<String>> {
-            let cond = self.parse(query)?;
+        /// objective get a trailing {"type": "score"} entry. natives: [(plugin name, library path)].
+        #[pyo3(signature = (seed, query, natives=vec![]))]
+        fn check(&self, py: Python<'_>, seed: i64, query: &str, natives: Vec<(String, String)>) -> PyResult<Option<String>> {
+            let (cond, libs) = self.parse(query, &natives)?;
             let world = self.w.clone();
             Ok(py.detach(move || {
-                let mut ev = Eval::new(&world, seed, &[]);
+                let mut ev = Eval::new(&world, seed, &libs);
                 if !ev.eval(&cond) {
                     return None;
                 }
@@ -151,14 +152,14 @@ mod py {
         /// Single-seed scan: every anchor within `within` of (x, z) where the query, moved there,
         /// matches. Anchors are grid points `step` apart, or the starts of `anchor` structures.
         /// Returns [(x, z, details JSON)], nearest first.
-        #[pyo3(signature = (seed, query, x, z, within, step=64, anchor=None))]
+        #[pyo3(signature = (seed, query, x, z, within, step=64, anchor=None, natives=vec![]))]
         #[allow(clippy::too_many_arguments)]
-        fn scan(&self, py: Python<'_>, seed: i64, query: &str, x: i32, z: i32, within: i32, step: i32, anchor: Option<String>) -> PyResult<Vec<(i32, i32, String)>> {
-            let cond = self.parse(query)?;
+        fn scan(&self, py: Python<'_>, seed: i64, query: &str, x: i32, z: i32, within: i32, step: i32, anchor: Option<String>, natives: Vec<(String, String)>) -> PyResult<Vec<(i32, i32, String)>> {
+            let (cond, libs) = self.parse(query, &natives)?;
             let sel = anchor.map(|a| query::parse_sel(&self.w, &serde_json::json!({"name": a}))).transpose().map_err(err)?;
             let world = self.w.clone();
             Ok(py.detach(move || {
-                query::scan(&world, &[], seed, &cond, (x, z), within, step.max(1), sel.as_ref())
+                query::scan(&world, &libs, seed, &cond, (x, z), within, step.max(1), sel.as_ref())
                     .into_iter()
                     .map(|(p, d)| (p.0, p.1, Value::Array(d).to_string()))
                     .collect()
@@ -224,9 +225,12 @@ mod py {
     }
 
     impl PyWorld {
-        fn parse(&self, query: &str) -> PyResult<query::Cond> {
+        /// The query and the native libraries it may call (loaded in `natives` order).
+        fn parse(&self, query: &str, natives: &[(String, String)]) -> PyResult<(query::Cond, Vec<search::Native>)> {
+            let libs = natives.iter().map(|(_, p)| search::Native::load(p)).collect::<Result<Vec<_>, _>>().map_err(err)?;
+            let names: Vec<String> = natives.iter().map(|(n, _)| n.clone()).collect();
             let q: Value = serde_json::from_str(query).map_err(|e| err(e.to_string()))?;
-            query::parse(&self.w, &[], &q).map_err(err)
+            Ok((query::parse(&self.w, &names, &q).map_err(err)?, libs))
         }
     }
 

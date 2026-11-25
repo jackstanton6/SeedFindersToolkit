@@ -6,7 +6,7 @@ import sys
 import time
 
 import sft
-from sft import plugins, query
+from sft import plugins
 
 
 def fmt_secs(s) -> str:
@@ -64,19 +64,13 @@ def run_job(job, a):
 
 
 def cmd_check(a):
-    w = sft.world(a.version)
-    engine_tree, py_terms = query.split_python(query.parse(a.query))
-    res = w.check(a.seed, json.dumps(engine_tree)) if engine_tree else "[]"
-    if res is not None and py_terms:
-        _, api = plugins.load(a.version)
-        res = res if all(api.conditions[t["name"]](w, a.seed, **t.get("params", {})) for t in py_terms) else None
-    print("match" if res is not None else "no match", res or "")
+    res = sft.check(a.version, a.seed, a.query)
+    print("match" if res is not None else "no match", json.dumps(res) if res is not None else "")
 
 
 def cmd_scan(a):
-    tree, _ = query.split_python(query.parse(a.query))
-    for x, z, details in sft.world(a.version).scan(a.seed, json.dumps(tree), a.x, a.z, a.within, a.step, a.anchor):
-        print(f"{x:8} {z:8}  {details if a.details else ''}")
+    for x, z, details in sft.scan(a.version, a.seed, a.query, a.x, a.z, a.within, a.step, a.anchor):
+        print(f"{x:8} {z:8}  {json.dumps(details) if a.details else ''}")
 
 
 def cmd_crack(a):

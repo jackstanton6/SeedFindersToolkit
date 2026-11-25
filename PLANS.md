@@ -267,7 +267,7 @@ all test files pass before the last commit.
 - [x] 4. Crack runs as a normal Job: progress, ETA, Stop, Ctrl-C.
 - [x] 5. Loot: a query using loot is refused at parse when the tables did not load (message names
   `python -m sft data 26.3`); a fill error stops the search with the unit and message.
-- [ ] 6. Plugins everywhere: `PyWorld.parse` gets the loaded native libraries; `check`, the GUI
+- [x] 6. Plugins everywhere: `PyWorld.parse` gets the loaded native libraries; `check`, the GUI
   re-check and `scan` evaluate `py(...)` terms, so they agree with a search.
 - [ ] 7. CLI: `crack --max N` stops after N seeds; an empty `--seeds-file` is an error; `scan` with
   only `py(...)` terms runs them.

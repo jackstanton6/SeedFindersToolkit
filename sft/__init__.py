@@ -42,24 +42,51 @@ def world(version: str = "26.3"):
     return _worlds[version]
 
 
+def prepare(version: str, query_text, loaded=None) -> tuple[str, list, list[dict], "plugins.Api", list]:
+    """A query split for the engine: (engine query JSON, natives it uses [(plugin, library)],
+    py(...) terms, plugin api, plugin list). Unknown py conditions are refused here."""
+    tree = query.parse(query_text) if isinstance(query_text, str) else query_text
+    engine_tree, py_terms = query.split_python(tree)
+    plugin_list, api = loaded or plugins.load(version)
+    for t in py_terms:
+        if t["name"] not in api.conditions:
+            raise query.QueryError(f"unknown python condition '{t['name']}' (is its plugin loaded?)")
+    used = {n.get("plugin") for n in query.nodes(engine_tree) if n["op"] == "native"}
+    natives = [n for n in plugins.natives(plugin_list) if n[0] in used]
+    return json.dumps(engine_tree or {"op": "and", "args": []}), natives, py_terms, api, plugin_list
+
+
+def _py_ok(api, w, seed: int, py_terms) -> bool:
+    return all(api.conditions[t["name"]](w, seed, **t.get("params", {})) for t in py_terms)
+
+
+def check(version: str, seed: int, query_text, loaded=None) -> list | None:
+    """Evaluates a query on one seed, plugins included: the match details, or None."""
+    q, natives, py_terms, api, _ = prepare(version, query_text, loaded)
+    w = world(version)
+    res = w.check(seed, q, natives)
+    return json.loads(res) if res is not None and _py_ok(api, w, seed, py_terms) else None
+
+
+def scan(version: str, seed: int, query_text, x: int, z: int, within: int, step: int = 64, anchor=None, loaded=None) -> list:
+    """Every anchor where the query, moved from (x, z) there, matches: [(x, z, details)], nearest
+    first. py(...) conditions only see the seed, so they hold at every anchor or at none."""
+    q, natives, py_terms, api, _ = prepare(version, query_text, loaded)
+    w = world(version)
+    if not _py_ok(api, w, seed, py_terms):
+        return []
+    return [(ax, az, json.loads(d)) for ax, az, d in w.scan(seed, q, x, z, within, step, anchor, natives)]
+
+
 class Job:
     """One search: the engine part runs in Rust threads; py(...) terms filter its matches here."""
 
     def __init__(self, version: str, query_text, mode="range", start=0, count=1_000_000, seeds=None, max_results=0, loaded=None, gpu=False,
                  shuffle=None):
         self.mode = mode
-        tree = query.parse(query_text) if isinstance(query_text, str) else query_text
-        engine_tree, self.py_terms = query.split_python(tree)
+        q, natives, self.py_terms, self.api, _ = prepare(version, query_text, loaded)
         self.world = world(version)
-        plugin_list, self.api = loaded or plugins.load(version)
-        for t in self.py_terms:
-            if t["name"] not in self.api.conditions:
-                raise query.QueryError(f"unknown python condition '{t['name']}' (is its plugin loaded?)")
-        used = {n.get("plugin") for n in query.nodes(engine_tree) if n["op"] == "native"}
-        self.search = engine().Search(
-            self.world, json.dumps(engine_tree or {"op": "and", "args": []}), mode, start, count,
-            seeds, [n for n in plugins.natives(plugin_list) if n[0] in used], max_results, gpu, shuffle,
-        )
+        self.search = engine().Search(self.world, q, mode, start, count, seeds, natives, max_results, gpu, shuffle)
         self.gpu_note = self.search.gpu_note
         self.rows: list[tuple[int, list]] = []
         self.py_rejected = 0
@@ -96,7 +123,7 @@ class Job:
         """New matches since the last poll, after py(...) filters."""
         new = []
         for seed, details, sc in self.search.take_results():
-            if all(self.api.conditions[t["name"]](self.world, seed, **t.get("params", {})) for t in self.py_terms):
+            if _py_ok(self.api, self.world, seed, self.py_terms):
                 d = json.loads(details)
                 new.append((seed, d + [{"type": "score", "value": sc}] if self.ranked else d))
             else:
