@@ -10,13 +10,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtCore import QByteArray, QMimeData, QPointF, QSettings, Qt  # noqa: E402
 from PySide6.QtGui import QDropEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
 QSettings.setDefaultFormat(QSettings.Format.IniFormat)
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tempfile.mkdtemp())  # keep the real settings untouched
 app = QApplication(sys.argv)
 from sft import query  # noqa: E402
-from sft.gui import blocks, wizard  # noqa: E402
+from sft.gui import blocks, seedbits, wizard  # noqa: E402
 from sft.gui.app import Main  # noqa: E402
 
 
@@ -54,6 +54,30 @@ def main():
     assert ed.text.toPlainText().count(" or ") == 3
     group.body.kids[0].wrap("none")
     assert ed.text.toPlainText().startswith("not village(within=300) or ")
+
+    # seed bits: split/join round trip, editing a half rebuilds the seed, sisters tinted, buttons fill the search
+    for s in (0, 1, -1, 2**63 - 1, -2**63, 123456789012345, -4172144997902289642):
+        assert seedbits.join(*seedbits.split(s)) == s
+    sb = w.seed_bits
+    sb.set_seed(-4172144997902289642)
+    for base in ("dec", "hex", "bin"):
+        sb.base.setCurrentText(base)
+        assert seedbits.parse(sb.lower_edit.text(), base) == seedbits.split(sb.seed)[1]
+    sb.upper_edit.setText(seedbits.fmt(7, 16, "bin"))
+    sb._from_halves()
+    assert seedbits.split(sb.seed) == (7, seedbits.split(-4172144997902289642)[1])
+    assert int(w.map_seed.text()) == sb.seed  # an edit here moves the map
+    sb.upper_edit.setText("not a number")
+    sb._from_halves()
+    assert seedbits.split(sb.seed)[0] == 7  # bad input keeps the last valid seed
+    low = seedbits.split(sb.seed)[1]
+    for seed in (seedbits.join(1, low), seedbits.join(2, low), seedbits.join(1, low ^ 1)):
+        w._add_row(seed, [])
+    w.results.selectRow(0)
+    tinted = [w.results.item(r, 0).background().style() != Qt.BrushStyle.NoBrush for r in range(3)]
+    assert sorted(tinted) == [False, True, True], tinted
+    next(b for b in sb.findChildren(QPushButton) if b.text() == "search sisters").click()
+    assert w.mode.currentText().startswith("upper 16") and int(w.fixed.text()) == low and w.hi.text() == "65535"
     print("ok")
 
 

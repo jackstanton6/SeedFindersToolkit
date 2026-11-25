@@ -19,6 +19,11 @@ stop point) · **Export** · **Tools**:
 - *Crack seed from structures*: structure coordinates in, matching seeds into the results table;
 - *Placement statistics*: odds and nearest-distance spread of one structure set around the map centre;
 - *Search sister seeds of map seed*: the query over the 65,536 seeds with the same structures.
+- *Seed bits*: opens the **seed bits** panel (under the map). It splits the map seed into its upper 16
+  bits (orange; what differs between sisters: biomes, terrain) and lower 48 bits (blue; the structure
+  seed shared by all sisters) in decimal, hex or binary. Edit either half to jump to that seed; *search
+  sisters* / *search this upper 16* fill the mode, fixed and range fields for you. Selecting a result
+  tints every result that is a sister of it.
 
 ## Query editor (left)
 

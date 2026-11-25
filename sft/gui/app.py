@@ -7,7 +7,7 @@ import threading
 import time
 
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication, QKeySequence, QPalette
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QGuiApplication, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter,
@@ -19,6 +19,7 @@ from sft import plugins, query
 from sft.gui.blocks import PRESETS, BlockEditor  # noqa: F401  (PRESETS kept importable from here)
 from sft.gui.help import HelpWindow, Tour
 from sft.gui.mapview import DEFAULT_SETS, MapView
+from sft.gui.seedbits import SeedBits, split
 from sft.gui.wizard import Wizard
 
 MONO = QFont("Consolas", 9)
@@ -148,6 +149,7 @@ class Main(QMainWindow):
         tm.addAction("Crack seed from structures...", self.crack)
         tm.addAction("Placement statistics...", self.placement_stats)
         tm.addAction("Search sister seeds of map seed", self.sisters)
+        tm.addAction("Seed bits (upper 16 / lower 48)...", lambda: (self.bits_dock.show(), self.bits_dock.raise_()))
         tools.setMenu(tm)
         bar.addWidget(tools)
         self.toolbar = bar
@@ -236,6 +238,15 @@ class Main(QMainWindow):
         dock.setWidget(map_box)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.map_box = map_box
+
+        # seed bits dock, under the map; follows the map seed
+        self.seed_bits = SeedBits(lambda low: self._fill_search("upper16", low, "full range"),
+                                  lambda up: self._fill_search("lower48", up, "first 10M"),
+                                  lambda seed: (self.map_seed.setText(str(seed)), self._map_from_controls()))
+        self.bits_dock = QDockWidget("seed bits", self)
+        self.bits_dock.setWidget(self.seed_bits)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.bits_dock)
+        self.splitDockWidget(dock, self.bits_dock, Qt.Orientation.Vertical)
 
         # log / plugins dock
         self.tabs = QTabWidget()
@@ -368,6 +379,14 @@ class Main(QMainWindow):
         self.fixed.setToolTip({"lower48": "upper 16 bits kept fixed (0 – 65535)",
                                "upper16": "seed or structure seed whose lower 48 bits are kept"}.get(kind, "not used in this mode"))
         self._apply_range(self.range.currentText())
+
+    def _fill_search(self, kind: str, fixed: int, range_name: str):
+        """seed bits buttons: set mode, fixed part and range; Start runs it"""
+        self.mode.setCurrentText(next(t for t, k in MODES.items() if k == kind))
+        self.fixed.setText(str(fixed))
+        self.range.setCurrentText(range_name)
+        self._apply_range(range_name)  # same name again emits nothing
+        self.say(f"search fields set: {self.mode.currentText()}, fixed {fixed}, {self.lo.text()} … {self.hi.text()}; press Start")
 
     def _apply_range(self, name: str):
         if name == "custom":
@@ -556,12 +575,26 @@ class Main(QMainWindow):
         sel = self._selected()
         if sel:
             seed, details = sel[0]
+            self._tint_sisters(split(seed)[1])
             self.map_seed.setText(str(seed))
             first = next((d for d in details if "x" in d), None)
             if first:
                 self.map_x.setValue(first["x"])
                 self.map_z.setValue(first["z"])
             self._map_from_controls()
+
+    def _tint_sisters(self, lower: int):
+        """tint every result row whose seed shares these lower 48 bits (a sister of the selected seed)"""
+        # ponytail: walks every row per click (up to MAX_TABLE_ROWS); index rows by lower 48 if it ever lags
+        tint, plain = QBrush(QColor(70, 58, 25)), QBrush()
+        self.results.setSortingEnabled(False)
+        for r in range(self.results.rowCount()):
+            it = self.results.item(r, 0)
+            brush = tint if it and split(int(it.text()))[1] == lower else plain
+            for c in range(self.results.columnCount()):
+                if (cell := self.results.item(r, c)) is not None:
+                    cell.setBackground(brush)
+        self.results.setSortingEnabled(True)
 
     def _result_menu(self, pos):
         sel = self._selected()
@@ -713,6 +746,7 @@ class Main(QMainWindow):
             seed = int(self.map_seed.text())
         except ValueError:
             return
+        self.seed_bits.set_seed(seed)
         self.map.y = self.map_y.value()
         self.map.scale = int(self.map_scale.currentText())
         self.map.show_height = self.map_height.isChecked()
