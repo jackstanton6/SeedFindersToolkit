@@ -251,6 +251,37 @@ Progress:
 Measured (RTX 5070 Ti, 24 threads): quad witch huts (structure seeds) ~0 -> 760/s CPU, 890/s with
 the GPU; village + monument (range) 16.2k -> 21.2k seeds/s.
 
+## Bug-fix batch (requested 2026-11-26)
+
+Scope: every bug in `docs/KNOWN-BUGS.md`, plus CI and a non-editable install. Work on master, one
+commit per item: reproduce with a failing test, fix, remove the KNOWN-BUGS entry. Parity suite and
+all test files pass before the last commit.
+
+- [ ] 0. Seed bits panel (uncommitted): run `test_gui.py`, check a headless screenshot, commit on its own.
+- [ ] 1. Estimate then Resume: `Main.estimate` resets `resume_unit` (and the results table).
+- [ ] 2. CLI `--start-unit`: the Job knows its start unit; percent and ETA count only the remaining
+  range. Possible duplicates near the resume point (at most a block per thread) are documented.
+- [ ] 3. Crack memory: sisters of cracked structure seeds are expanded and checked in the engine
+  (threaded, streamed to results), not as Python lists. Above 1,024 structure seeds, warn with the
+  expected sister-check time and suggest more observations; the crack keeps running.
+- [ ] 4. Crack runs as a normal Job: progress, ETA, Stop, Ctrl-C.
+- [ ] 5. Loot: a query using loot is refused at parse when the tables did not load (message names
+  `python -m sft data 26.3`); a fill error stops the search with the unit and message.
+- [ ] 6. Plugins everywhere: `PyWorld.parse` gets the loaded native libraries; `check`, the GUI
+  re-check and `scan` evaluate `py(...)` terms, so they agree with a search.
+- [ ] 7. CLI: `crack --max N` stops after N seeds; an empty `--seeds-file` is an error; `scan` with
+  only `py(...)` terms runs them.
+- [ ] 8. `island()` details carry their condition, so two island conditions both show.
+- [ ] 9. `query._literal` turns any literal error into a `QueryError`; the example markdown exporter
+  handles details without a `name`.
+- [ ] CI (GitHub Actions, Windows + Linux): `cargo test`, build without CUDA, pip install,
+  `test_query.py`, `test_gui.py` offscreen. Tests that need `data/26.3` skip with a message.
+- [ ] Non-editable install: data and plugins default to a per-user folder (`%APPDATA%/sft`,
+  `~/.local/share/sft`), `SFT_HOME` overrides it, an editable checkout keeps the repo folders; docs
+  ship inside the package.
+
+Then: the GPU biome milestone below, as written.
+
 ## Next: biome checks on the GPU (milestone)
 
 The GPU only rejects what the 48-bit pre-check rejects; every survivor still needs biomes (and often
