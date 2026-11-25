@@ -5,9 +5,6 @@ and have not been reproduced; check each one before fixing it. Remove an entry w
 
 ## Bugs
 
-1. **Estimate, then Resume, uses a stale resume point.** `Main.estimate` replaces `self.job` without
-   resetting `self.resume_unit` (`sft/gui/app.py`), so Resume starts the estimated job at the unit
-   where the previous search stopped, with the old results still in the table.
 2. **CLI `--start-unit` progress never reaches 100%.** A resumed CLI run is a new `Job`: its
    `units_done` starts at 0 but `Job.stats` divides by the full total (`sft/__init__.py`), so the
    percentage and ETA are off by the skipped part. (Resume inside one `Job`, as the GUI does, is

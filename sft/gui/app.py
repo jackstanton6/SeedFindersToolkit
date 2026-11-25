@@ -442,7 +442,9 @@ class Main(QMainWindow):
         job = self._make_job()
         if job is None:
             return
-        self.job, self.estimating = job, True
+        # a new job: the old search's resume point and rows don't belong to it
+        self.job, self.estimating, self.resume_unit = job, True, 0
+        self.results.setRowCount(0)
         self.say("estimating (running the search for 3 s)...")
         threads = self.threads.value()
 

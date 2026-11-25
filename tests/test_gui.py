@@ -78,6 +78,14 @@ def main():
     assert sorted(tinted) == [False, True, True], tinted
     next(b for b in sb.findChildren(QPushButton) if b.text() == "search sisters").click()
     assert w.mode.currentText().startswith("upper 16") and int(w.fixed.text()) == low and w.hi.text() == "65535"
+
+    # Estimate replaces the job: Resume must not continue the old search's resume point or keep its rows
+    w.resume_unit = 1234
+    w.estimate()
+    assert w.resume_unit == 0 and w.results.rowCount() == 0, (w.resume_unit, w.results.rowCount())
+    w.job.stop()
+    while w.busy():
+        app.processEvents()
     print("ok")
 
 
