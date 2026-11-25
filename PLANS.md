@@ -271,7 +271,7 @@ all test files pass before the last commit.
   re-check and `scan` evaluate `py(...)` terms, so they agree with a search.
 - [x] 7. CLI: `crack --max N` stops after N seeds; an empty `--seeds-file` is an error; `scan` with
   only `py(...)` terms runs them.
-- [ ] 8. `island()` details carry their condition, so two island conditions both show.
+- [x] 8. `island()` details carry their condition, so two island conditions both show.
 - [ ] 9. `query._literal` turns any literal error into a `QueryError`; the example markdown exporter
   handles details without a `name`.
 - [ ] CI (GitHub Actions, Windows + Linux): `cargo test`, build without CUDA, pip install,

@@ -175,6 +175,13 @@ def test_check_and_scan_run_plugins_like_a_search():
     assert sft.scan("26.3", seed, 'py("example_python.seed_contains", text="7")', 0, 0, 100, 100)  # py terms alone
 
 
+def test_two_islands_keep_their_own_details():
+    islands = [d for d in check("island(within=3000) and island(within=3000, at=(2000, 0), min_circularity=0.1)", 0) if d["type"] == "island"]
+    assert len(islands) == 2, islands  # the second used to delete the first one's detail
+    assert {json.dumps(d["condition"], sort_keys=True) for d in islands} == {
+        json.dumps({"op": "island", "within": 3000}), json.dumps({"min_circularity": 0.1, "op": "island", "within": 3000})}, islands
+
+
 def test_cli_edge_cases():
     import subprocess
     import tempfile
@@ -196,5 +203,6 @@ if __name__ == "__main__":
     test_crack_runs_as_a_job()
     test_loot_without_tables_is_refused()
     test_check_and_scan_run_plugins_like_a_search()
+    test_two_islands_keep_their_own_details()
     test_cli_edge_cases()
     print("ok")

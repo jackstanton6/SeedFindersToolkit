@@ -5,8 +5,6 @@ and have not been reproduced; check each one before fixing it. Remove an entry w
 
 ## Bugs
 
-8. **Two `island()` conditions overwrite each other's details.** `Eval::island` removes every
-   earlier `island` detail before adding its own.
 9. **Small robustness gaps.** `query._literal` only catches `ValueError`, so input such as
    `village(within={[]: 1})` escapes as a `TypeError` instead of a `QueryError`; the example
    plugin's markdown exporter raises `KeyError` on details without a `name` (anchors, islands,

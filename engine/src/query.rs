@@ -48,7 +48,8 @@ pub enum Metric {
     BiomeArea { biomes: BiomeSet, at: (i32, i32), within: i32, window: i32, y: i32, step: i32 },
     BiomeCount { among: Option<BiomeSet>, at: (i32, i32), within: i32, y: i32, step: i32 },
     BiomeBorder { a: BiomeSet, b: BiomeSet, at: (i32, i32), within: i32, y: i32, step: i32 },
-    Island { biomes: Option<BiomeSet>, at: (i32, i32), within: i32, window: i32, y: i32, step: i32, min_circ: f64, max_elong: f64, lagoon: bool },
+    /// `cond`: the query node without `at`, shown in the details so two islands keep theirs apart.
+    Island { biomes: Option<BiomeSet>, at: (i32, i32), within: i32, window: i32, y: i32, step: i32, min_circ: f64, max_elong: f64, lagoon: bool, cond: Value },
     Climate { param: usize, pos: (i32, i32, i32) },
     Height { at: (i32, i32), ocean_floor: bool },
     Terrain { kind: Terrain, at: (i32, i32), within: i32, step: i32 },
@@ -286,6 +287,11 @@ impl Parser<'_> {
                     min_circ: flt(v, "min_circularity", 0.0),
                     max_elong: flt(v, "max_elongation", inf),
                     lagoon: v["lagoon"].as_bool().unwrap_or(false),
+                    cond: {
+                        let mut c = v.clone();
+                        c.as_object_mut().map(|o| o.remove("at"));
+                        c
+                    },
                 },
                 1.0,
                 inf,
@@ -1119,7 +1125,10 @@ impl<'w> Eval<'w> {
                 }
                 (edges * step) as f64
             }
-            Metric::Island { biomes, at, within, window, y, step, min_circ, max_elong, lagoon } => self.island(*biomes, *at, *within, *window, *y, *step, (*min_circ, *max_elong, *lagoon), note),
+            Metric::Island { biomes, at, within, window, y, step, min_circ, max_elong, lagoon, cond } => {
+                let cond = note.then(|| cond.clone());
+                self.island(*biomes, *at, *within, *window, *y, *step, (*min_circ, *max_elong, *lagoon), cond)
+            }
             Metric::Climate { param, pos } => {
                 self.seeded();
                 self.s.as_ref().unwrap().climate_at(&mut self.bc.ctx, pos.0, pos.1, pos.2)[*param] as f64
@@ -1225,13 +1234,13 @@ impl<'w> Eval<'w> {
     /// `within` disc that passes the shape filters; its area in blocks. Land = not `#is_ocean`, or
     /// the given biomes (which must then border only ocean).
     #[allow(clippy::too_many_arguments)]
-    fn island(&mut self, biomes: Option<BiomeSet>, at: (i32, i32), within: i32, window: i32, y: i32, step: i32, (min_circ, max_elong, lagoon): (f64, f64, bool), note: bool) -> f64 {
+    fn island(&mut self, biomes: Option<BiomeSet>, at: (i32, i32), within: i32, window: i32, y: i32, step: i32, (min_circ, max_elong, lagoon): (f64, f64, bool), note: Option<Value>) -> f64 {
         let g = self.grid(at, within + window, y, step);
         let ocean = self.w.biomes.tag("minecraft:is_ocean");
         let land: Vec<bool> = g.ids.iter().map(|&b| biomes.map_or(!contains(ocean, b), |set| contains(set, b))).collect();
         let near = |k: usize| dist2(g.pos(k), at) <= (within.max(step / 2) as i64).pow(2);
         let water = if lagoon { g.components(&land.iter().map(|l| !l).collect::<Vec<_>>()) } else { vec![] };
-        let mut best = 0.0;
+        let (mut best, mut mine) = (0.0, None); // mine: index of this condition's detail
         let comps = g.components(&land);
         let mut owner = vec![usize::MAX; land.len()];
         for (ci, comp) in comps.iter().enumerate() {
@@ -1259,10 +1268,16 @@ impl<'w> Eval<'w> {
             let blocks = area * (step as f64).powi(2);
             if blocks > best {
                 best = blocks;
-                if note {
+                if let Some(cond) = &note {
                     let (cx, cz) = ((xs.iter().sum::<i32>() as f64 / area) as i32, (zs.iter().sum::<i32>() as f64 / area) as i32);
-                    self.details.retain(|d| d["type"] != "island");
-                    self.details.push(json!({"type": "island", "x": g.x0 + cx * step, "z": g.z0 + cz * step, "area": blocks, "circularity": circ, "elongation": elong}));
+                    let d = json!({"type": "island", "x": g.x0 + cx * step, "z": g.z0 + cz * step, "area": blocks, "circularity": circ, "elongation": elong, "condition": cond});
+                    match mine {
+                        Some(i) => self.details[i] = d,
+                        None => {
+                            mine = Some(self.details.len());
+                            self.details.push(d);
+                        }
+                    }
                 }
             }
         }

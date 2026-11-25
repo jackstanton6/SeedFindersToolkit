@@ -172,7 +172,8 @@ Length in blocks of the border where `a` touches `b`.
 Area of the largest island touching the disc: land surrounded by ocean that fits inside the
 window. Land is anything not `#is_ocean`, or `biomes` (which must then border only ocean).
 Shape filters: circularity (4πA/P², 1 is a disc), elongation (bounding-box aspect ratio) and
-`lagoon=True` (encloses a lake of its own).
+`lagoon=True` (encloses a lake of its own). Each match detail names its condition (`"condition"`,
+the query node without `at`), so two island conditions in one query each keep theirs.
 
 ```python
 island(biomes=["mushroom_fields"], within=1500)
