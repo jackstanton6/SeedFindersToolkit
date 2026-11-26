@@ -391,3 +391,29 @@ region files compared block by block).
   CLI `export`. `tests/export_oracle.py`: the dedicated server opens an export and saves the inner
   chunks back unchanged.
 - [ ] 13. Docs: Query-Language, Accuracy (ceilings removed), Versions, GUI, AGENTS milestones.
+  Done for everything shipped so far (each item updated its docs); the Accuracy ceilings for
+  structures, features and the spawn block go once 5-7 land.
+
+Breakdown of 5-7 (measured: the game's structure code is ~19,600 lines of Java, the decoration
+features ~12,000 lines with 47 feature types behind 240 configured features; the whole engine was
+~11,800 lines when this was written). Each step ships on its own with zero mismatches:
+
+- 5a. Ground truth for decoration: dedicated-server worlds compared block for block (FULL chunks
+  from region files, inner chunks only, as tests/export_oracle.py does), with datapacks that empty
+  every biome's feature list (structures + beardifier alone) or remove every structure set
+  (features alone), so each half can be verified without the other.
+- 5b. StructureTemplate.placeInWorld and the processors the overworld uses (rule, block_rot,
+  gravity, block_age, capped, protected_blocks, lava_submerged_block, jigsaw replacement, fluid
+  handling): igloo, shipwreck, ocean ruins, ruined portal.
+- 5c. Scattered pieces: swamp hut, desert pyramid, jungle temple, buried treasure.
+- 5d. Jigsaw assembly (JigsawPlacement: pools, connections, free-space shapes, pool element types
+  incl. feature elements): villages, pillager outposts, ancient cities, trail ruins, trial chambers.
+- 5e. Beardifier (terrain adaptation) in doFill: the TERRAIN chunks next to structures.
+- 5f. Multi-piece legacy structures: stronghold, mineshaft (exact depth), ocean monument, mansion.
+- 6a. Decoration loop (applyBiomeDecoration: steps, FeatureSorter order, decoration and feature
+  seeds) and the placement modifiers.
+- 6b. Feature types, most common first: ores, disks, springs, lakes, freeze_top_layer, patches and
+  simple blocks, trees (trunk/foliage placers, decorators), mushrooms, bamboo, ocean plants,
+  icebergs, blue ice, geodes, fossils, dungeons, dripstone, lush caves, sculk, glow lichen, ...
+- 7. Exact spawn block over FULL chunks (setInitialSpawn's spiral, getSpawnPosInChunk), then
+  `spawn_block` and `at="spawn"` drop their approximation.
