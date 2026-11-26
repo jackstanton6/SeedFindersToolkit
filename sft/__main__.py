@@ -1,4 +1,4 @@
-"""Command line: `python -m sft [gui|data|search|check|scan|locate|loot|crack|plugins]` (no command = GUI)."""
+"""Command line: `python -m sft [gui|data|search|check|scan|locate|loot|crack|spawn|chunk|export|plugins]` (no command = GUI)."""
 import argparse
 import json
 import os
@@ -102,6 +102,52 @@ def cmd_locate(a):
         print(f"{name:40} {x:8} {y:5} {z:8}{'' if exact else '  (approximate y/validity)'}")
 
 
+def cmd_spawn(a):
+    w = sft.world(a.version)
+    x, z = w.spawn(a.seed)
+    print(f"spawn {x} {z} (chunk {x >> 4} {z >> 4}; the centre of the spawn chunk), biome {w.biomes()[w.block_biome(a.seed, x, 64, z)].split(':')[-1]}")
+
+
+def cmd_chunk(a):
+    w = sft.world(a.version)
+    ((cx, cz, palette, blocks, heights, biomes),) = w.chunks(a.seed, a.cx, a.cz, a.cx, a.cz)
+    if a.out:
+        with open(a.out, "w") as f:
+            json.dump({"x": cx, "z": cz, "min_y": -64, "palette": palette, "blocks": blocks, "heights": heights, "biomes": biomes}, f)
+        print("wrote", a.out)
+        return
+    counts = {}
+    for b in blocks:
+        counts[palette[b]] = counts.get(palette[b], 0) + 1
+    for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        print(f"{n:7} {name}")
+    print(f"surface height {min(heights[:256])}..{max(heights[:256])}, ocean floor {min(heights[256:])}..{max(heights[256:])}")
+
+
+def cmd_export(a):
+    from pathlib import Path
+    from sft import worldfile
+    w = sft.world(a.version)
+    dv = int((sft.data.data_dir(a.version) / "data_version.txt").read_text())
+    x0, z0, x1, z1 = min(a.x0, a.x1), min(a.z0, a.z1), max(a.x0, a.x1), max(a.z0, a.z1)
+    chunks = w.chunks(a.seed, x0 >> 4, z0 >> 4, x1 >> 4, z1 >> 4)
+    if a.schem:
+        by = {(c[0], c[1]): c for c in chunks}
+        y0, y1 = a.y
+
+        def block_at(x, y, z):
+            cx, cz, palette, blocks, _, _ = by[(x >> 4, z >> 4)]
+            return palette[blocks[((y + 64) * 16 + (z & 15)) * 16 + (x & 15)]]
+        print("wrote", worldfile.write_schem(Path(a.schem), dv, (x0, y0, z0, x1, y1, z1), block_at))
+    else:
+        out = Path(a.mca)
+        sx, sz = w.spawn(a.seed)
+        files = worldfile.write_regions(out, dv, chunks)
+        worldfile.write_level_dat(out, dv, a.seed, f"sft {a.seed}", (sx, 80, sz))
+        print(f"wrote {len(chunks)} chunks in {len(files)} region file(s) and level.dat to {out}")
+    print("note: terrain, surface blocks and caves only (structures and decoration are not placed yet)")
+
+
 def cmd_plugins(a):
     found, api = plugins.load(a.version)
     for p in found:
@@ -169,6 +215,21 @@ def main():
     lt.add_argument("--x", type=int, default=0)
     lt.add_argument("--z", type=int, default=0)
     lt.add_argument("--radius", type=int, default=1000)
+    sp = sub.add_parser("spawn", help="the world spawn of a seed")
+    sp.add_argument("seed", type=int)
+    ch = sub.add_parser("chunk", help="a generated chunk: block counts and heights (or --out JSON)")
+    ch.add_argument("seed", type=int)
+    ch.add_argument("cx", type=int, help="chunk x (block x >> 4)")
+    ch.add_argument("cz", type=int)
+    ch.add_argument("--out", help="write palette, blocks (y, z, x order from y -64), heightmaps and biomes as JSON")
+    ex = sub.add_parser("export", help="write a generated area as Anvil region files or a Sponge schematic")
+    ex.add_argument("seed", type=int)
+    for k in ("x0", "z0", "x1", "z1"):
+        ex.add_argument(k, type=int, help="block coordinates of opposite corners" if k == "x0" else None)
+    dest = ex.add_mutually_exclusive_group(required=True)
+    dest.add_argument("--mca", help="world folder to write (region files + a minimal level.dat)")
+    dest.add_argument("--schem", help=".schem file to write (Sponge v3)")
+    ex.add_argument("--y", type=int, nargs=2, default=[-64, 319], metavar=("LO", "HI"), help="y range for --schem")
     sub.add_parser("plugins", help="list plugins and what they register")
     a = p.parse_args()
 
@@ -179,7 +240,8 @@ def main():
         print("data ready in", sft.data.setup(a.mc_version, a.jar))
     else:
         try:
-            {"search": cmd_search, "check": cmd_check, "scan": cmd_scan, "locate": cmd_locate, "loot": cmd_loot, "crack": cmd_crack, "plugins": cmd_plugins}[a.cmd](a)
+            {"search": cmd_search, "check": cmd_check, "scan": cmd_scan, "locate": cmd_locate, "loot": cmd_loot, "crack": cmd_crack, "plugins": cmd_plugins,
+             "spawn": cmd_spawn, "chunk": cmd_chunk, "export": cmd_export}[a.cmd](a)
         except (ValueError, FileNotFoundError) as e:  # bad query, unknown name, missing data: no traceback
             sys.exit(f"error: {e}")
 

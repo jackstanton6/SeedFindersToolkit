@@ -69,6 +69,19 @@ counts every match of the search, resumes included, so Resume after reaching it 
   ```
 - **Loot** (CLI `loot`): every chest of a structure type near a point, with its contents.
   `python -m sft loot 12345 buried_treasure --radius 1500`
+- **Spawn, chunks, export** (CLI `spawn`, `chunk`, `export`): the world spawn of a seed; the blocks
+  and heights of one generated chunk (`--out` writes them as JSON); a generated area as Anvil
+  region files with a minimal level.dat (`--mca folder`, opens in Minecraft 26.3 and world viewers)
+  or as a Sponge schematic (`--schem file --y lo hi`, for WorldEdit and similar). Chunks hold the
+  terrain, surface blocks, bedrock, ore veins and caves, exactly as the game generates them; trees,
+  structures and other decoration are not placed yet. In Python: `World.spawn(seed)`,
+  `World.block(seed, x, y, z)`, `World.chunks(seed, cx0, cz0, cx1, cz1)`, and `sft.worldfile`.
+
+  ```sh
+  python -m sft export 12345 -200 -200 200 200 --mca my_world
+  ```
+  Opening the folder in the game keeps these chunks as they are; the game generates everything
+  around them (its trees and ores may reach one chunk into the edge of the area).
 - **Attempts overlay** (map panel): every placement attempt of a structure set, green squares for
   starts that generate and red crosses for failed ones. For strongholds the ring bands are drawn too.
 - **Placement statistics** (Tools menu): samples 2,000 random seeds for one set around the map centre:

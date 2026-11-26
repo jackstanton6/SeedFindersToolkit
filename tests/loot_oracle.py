@@ -131,7 +131,7 @@ def canonical(item: dict) -> dict:
 # --- server -------------------------------------------------------------------------------------
 
 class Server:
-    def __init__(self, level: str, seed: int):
+    def __init__(self, level: str, seed: int, keep: bool = False):
         from sft import data
         jar = data.download_server_jar(VERSION)
         SERVER.mkdir(parents=True, exist_ok=True)
@@ -142,7 +142,8 @@ class Server:
             "server-port": "25599", "sync-chunk-writes": "true", "region-file-compression": "deflate",
         }
         (SERVER / "server.properties").write_text("".join(f"{k}={v}\n" for k, v in props.items()))
-        shutil.rmtree(SERVER / level, ignore_errors=True)
+        if not keep:  # keep: open the world already in the folder (e.g. an export)
+            shutil.rmtree(SERVER / level, ignore_errors=True)
         self.level = SERVER / level
         self.p = subprocess.Popen(["java", "-Xmx6G", "-jar", str(jar), "nogui"], cwd=SERVER, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)

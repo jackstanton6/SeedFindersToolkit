@@ -54,6 +54,7 @@ python tests/run_oracle.py 26.3                    # regenerate ground truth (ne
 python tests/run_oracle.py 26.3 structures slime
 python tests/loot_oracle.py fill                   # dedicated server; loot tables
 python tests/loot_oracle.py world 0 12345 35467 59104   # real worlds; chest seeds, portal obsidian
+python tests/export_oracle.py 12345                # export --mca read back by the dedicated server
 cd engine && cargo test --release -- --ignored     # parity suite: must stay at zero mismatches
 python tests/test_query.py                         # DSL tests
 python tests/test_engine.py                        # query errors and hints, match details, stop/resume, max results

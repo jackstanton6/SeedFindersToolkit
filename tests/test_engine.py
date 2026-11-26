@@ -241,6 +241,42 @@ def test_block_conditions():
     assert "depth must be" in refused("block('stone', depth='deep')")
 
 
+def test_chunks_blocks_and_schematic():
+    import gzip
+    import tempfile
+    from sft import worldfile
+    sys.path.insert(0, str(Path(__file__).parent))
+    from loot_oracle import read_nbt
+    ((cx, cz, palette, blocks, heights, biomes),) = w.chunks(SEED, 3, -2, 3, -2)
+    assert len(blocks) == 16 * 16 * 384 and len(heights) == 512 and len(biomes) == 4 * 96 * 4
+    x, z = 3 * 16 + 5, -2 * 16 + 9
+    top = heights[9 * 16 + 5]
+    assert palette[blocks[((top + 64) * 16 + 9) * 16 + 5]] == w.block(SEED, x, top, z) != "minecraft:air"
+    assert w.block(SEED, x, top + 1, z) == "minecraft:air" and w.block(SEED, x, -64, z) == "minecraft:bedrock"
+    # schematic: Sponge v3, varint indices in x, z, y order
+    box = (x - 2, top - 3, z - 2, x + 2, top + 1, z + 2)
+    path = Path(tempfile.mkdtemp()) / "t.schem"
+    worldfile.write_schem(path, 5023, box, lambda bx, by, bz: w.block(SEED, bx, by, bz))
+    s = read_nbt(gzip.decompress(path.read_bytes()))["Schematic"]
+    names = {v: k for k, v in s["Blocks"]["Palette"].items()}
+    data, idx, i = s["Blocks"]["Data"], [], 0
+    while i < len(data):
+        v = shift = 0
+        while True:
+            b = data[i]
+            i += 1
+            v |= (b & 0x7F) << shift
+            shift += 7
+            if b < 0x80:
+                break
+        idx.append(v)
+    W, H, L = s["Width"], s["Height"], s["Length"]
+    assert (W, H, L) == (5, 5, 5) and len(idx) == 125
+    for k, v in enumerate(idx):
+        bx, bz, by = box[0] + k % W, box[2] + k // W % L, box[1] + k // (W * L)
+        assert names[v] == w.block(SEED, bx, by, bz)
+
+
 def test_cli_edge_cases():
     import subprocess
     import tempfile
@@ -267,5 +303,6 @@ if __name__ == "__main__":
     test_point_biome_checks_are_block_level()
     test_spawn_anchors_conditions()
     test_block_conditions()
+    test_chunks_blocks_and_schematic()
     test_cli_edge_cases()
     print("ok")

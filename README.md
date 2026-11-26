@@ -64,6 +64,10 @@ python -m sft locate 12345 village --radius 2000
 python -m sft loot 12345 buried_treasure --radius 1500
 python -m sft scan 12345 "village(within=150) >= 2" --within 10000 --step 128
 python -m sft crack swamp_hut:-1200,840 desert_pyramid:310,-560 pillager_outpost:1040,520 shipwreck:-2160,-1136
+python -m sft spawn 12345
+python -m sft chunk 12345 6 -2
+python -m sft export 12345 -200 -200 200 200 --mca my_world
+python -m sft export 12345 0 0 63 63 --schem area.schem --y 40 120
 ```
 
 ## Documentation

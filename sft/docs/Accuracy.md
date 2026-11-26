@@ -14,6 +14,7 @@ the way the server loads them), dumps ground truth for random positions and seed
 | block-level (F3) biomes, `BiomeManager` zoom over stored chunk biomes | 80,000 blocks | 0 mismatches |
 | spawn search (`NoiseSpawnFinder`, `getOrigin`): position and chunk | 1,200 seeds | 0 mismatches |
 | chunk blocks after the noise fill and the material rules (surface blocks, terracotta bands, ice, bedrock, ore veins) and both worldgen heightmaps | 240 chunks (56 biomes) × 98,304 blocks | 0 mismatches |
+| `export --mca` read back by the dedicated server (inner chunks of a 5x5 export) | 884,736 blocks | 0 changed |
 | floor bedrock from the bedrock_floor gradient alone (`bedrock()`, crack) | 368,640 floor blocks | 0 mismatches |
 | the same chunks after the cave and canyon carvers (aquifer fluids, grass/mycelium top fix-ups; 173,704 carved blocks) | 240 chunks | 0 mismatches |
 | `WORLD_SURFACE_WG` and `OCEAN_FLOOR_WG` heights (incl. aquifers) | 1,600 columns × 2 | 0 mismatches |

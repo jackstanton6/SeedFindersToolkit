@@ -93,6 +93,8 @@ def extract(version: str, server_jar: Path) -> None:
         raise RuntimeError(f"the data generator failed (java exit {gen.returncode}):\n{(gen.stderr or gen.stdout)[-2000:]}")
     shutil.copytree(work / "generated/reports/biome_parameters", out / "reports/biome_parameters", dirs_exist_ok=True)
     shutil.copy(work / "generated/reports/blocks.json", out / "reports/blocks.json")  # block states, ids, defaults
+    with zipfile.ZipFile(server_jar) as bundle, zipfile.ZipFile(io.BytesIO(bundle.read(f"META-INF/versions/{version}/server-{version}.jar"))) as jar:
+        (out / "data_version.txt").write_text(str(json.loads(jar.read("version.json"))["world_version"]))  # chunk DataVersion
     write_items(work / "generated/reports/minecraft/components/item", out / "items.json")
     (out / "version.txt").write_text(version)
 

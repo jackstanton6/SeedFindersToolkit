@@ -106,6 +106,52 @@ mod py {
             Seeded::new(&self.w, seed).block_biome(&mut BiomeCtx::cached(), x, y, z)
         }
 
+        /// The block at a position ("minecraft:stone"), from the generated chunk.
+        fn block(&self, py: Python<'_>, seed: i64, x: i32, y: i32, z: i32) -> PyResult<String> {
+            let w = self.w.clone();
+            py.detach(move || {
+                let c = crate::chunk::Chunks::new(&w, seed).terrain(x >> 4, z >> 4).map_err(PyValueError::new_err)?;
+                Ok(w.blocks.to_string(c.get(&w, x, y, z)))
+            })
+        }
+
+        /// Generated chunks cx0..=cx1 x cz0..=cz1 (in parallel): per chunk (cx, cz, palette of
+        /// block states, block indices in (y, z, x) order from min_y, heightmaps WORLD_SURFACE_WG and
+        /// OCEAN_FLOOR_WG as highest occupied y per column (z, x order), stored biomes (4x4x4
+        /// cells, y fastest, then x, then z, from y = min_y)).
+        #[allow(clippy::type_complexity)]
+        fn chunks(&self, py: Python<'_>, seed: i64, cx0: i32, cz0: i32, cx1: i32, cz1: i32) -> PyResult<Vec<(i32, i32, Vec<String>, Vec<u16>, Vec<i32>, Vec<String>)>> {
+            let w = self.w.clone();
+            py.detach(move || {
+                let coords: Vec<(i32, i32)> = (cz0..=cz1).flat_map(|z| (cx0..=cx1).map(move |x| (x, z))).collect();
+                coords
+                    .par_iter()
+                    .map_init(
+                        || crate::chunk::Chunks::new(&w, seed),
+                        |ch, &(cx, cz)| {
+                            let c = ch.terrain(cx, cz).map_err(PyValueError::new_err)?;
+                            let mut ids = std::collections::HashMap::new();
+                            let mut palette = vec![];
+                            let blocks = c
+                                .blocks
+                                .iter()
+                                .map(|&s| {
+                                    *ids.entry(s).or_insert_with(|| {
+                                        palette.push(w.blocks.to_string(s));
+                                        (palette.len() - 1) as u16
+                                    })
+                                })
+                                .collect();
+                            let heights = (0..2).flat_map(|hm| (0..256).map(move |k| (hm, k))).map(|(hm, k)| c.height(hm, k & 15, k >> 4)).collect();
+                            let qy = w.min_y >> 2;
+                            let biomes = ch.s.biomes_volume(&mut BiomeCtx::cached(), cx * 4, qy, cz * 4, 4, w.height >> 2, 4).iter().map(|&b| w.biomes.name(b).to_string()).collect();
+                            Ok((cx, cz, palette, blocks, heights, biomes))
+                        },
+                    )
+                    .collect()
+            })
+        }
+
         fn height(&self, seed: i64, x: i32, z: i32, ocean_floor: bool) -> i32 {
             let hm = if ocean_floor { Heightmap::OceanFloorWg } else { Heightmap::WorldSurfaceWg };
             Seeded::new(&self.w, seed).base_height(x, z, hm)

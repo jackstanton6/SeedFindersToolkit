@@ -384,6 +384,9 @@ region files compared block by block).
   Not planned unless someone asks: cracking with structures + bedrock already works.
 - [ ] 11. GUI: spawn marker, surface block map layer, ore vein overlay (chosen y), chunk inspector
   (vertical slice / y-level view).
-- [ ] 12. API: `World.spawn`, `World.block`, `World.chunk`; CLI `spawn SEED` and `chunk SEED X Z`;
-  export a generated area as `.mca` (+ minimal level.dat) and Sponge `.schem`.
+- [x] 12. API: `World.spawn`, `World.block`, `World.chunk`; CLI `spawn SEED` and `chunk SEED X Z`;
+  export a generated area as `.mca` (+ minimal level.dat) and Sponge `.schem`. `World.chunks` (a
+  range, in parallel), `sft.worldfile` (stdlib NBT writer, 26.x palettes and world_gen_settings.dat),
+  CLI `export`. `tests/export_oracle.py`: the dedicated server opens an export and saves the inner
+  chunks back unchanged.
 - [ ] 13. Docs: Query-Language, Accuracy (ceilings removed), Versions, GUI, AGENTS milestones.
