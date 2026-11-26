@@ -69,6 +69,14 @@ SPECS = {
                      {"within": 1000, "at": SPAWN, "min": 10}, "10 means the frame is complete and can be lit; each obsidian still missing costs 1."),
     "portal_obsidian": ("loot", "ruined portal obsidian", "a ruined portal with at least {min} obsidian within {within} blocks of {at}", ["max"],
                         {"within": 1000, "at": SPAWN, "min": 1}, "All plain obsidian of the portal."),
+    "block": ("terrain", "blocks in an area", "at least {min} {name} blocks ({depth}) within {within} blocks of {at}", ["max"],
+              {"within": 0, "at": SPAWN, "depth": "surface", "min": 1},
+              "Counts blocks in generated chunks (terrain, surface blocks, caves). A name, a list or a #tag. Slow: every chunk in the circle is generated."),
+    "ore_vein": ("terrain", "ore vein", "at least {min} {count} {type} vein blocks within {within} blocks of {at}", ["max"],
+                 {"type": "iron", "count": "raw", "within": 64, "at": SPAWN, "min": 1},
+                 "Large ore veins: raw ore blocks (raw), ore (ore) or both (all). Iron veins are at y -60 to -8, copper at 0 to 50."),
+    "spawn_block": ("terrain", "block at spawn", "the block at the world spawn is {name}", [], {},
+                    "The top block where the world spawn is (grass, sand, snow...)."),
     "spawn_distance": ("terrain", "spawn distance", "the world spawn at least {min} blocks from (0, 0)", ["max"], {},
                        "How far the real spawn point is from (0, 0). Use 'world spawn' in any block's position to measure from the spawn."),
     "native": ("plugins", "native plugin filter", "plugin {plugin} filter {filter}", ["params", "min", "max"], {}, "A filter from a Rust/C plugin."),
@@ -162,6 +170,10 @@ PRESETS = {  # ready-made queries (overworld speedrun parts and common hunts)
     "spawn on a mountain": "height(at='spawn') >= 150",
     "village at spawn": "village(within=200, at='spawn')",
     "spawn far from (0, 0)": "spawn_distance() >= 1000",
+    "red sand desert at spawn": "biome('#is_badlands', at='spawn') and block('red_sand', within=32, at='spawn') >= 1500",
+    "ice spikes field": "biome('ice_spikes', within=200) and block('packed_ice', within=48, y=(64, 140)) >= 400",
+    "terracotta canyon at spawn": "biome('#is_badlands', within=100, at='spawn') and block('#minecraft:terracotta', within=32, at='spawn', depth='subsurface') >= 3000",
+    "rich iron vein near spawn": "ore_vein('iron', within=48, at='spawn') >= 20",
 }
 STRUCT_KEYS = {"structure": ["name"], "nearest": ["name"], "loot": ["name"], "near": ["a", "b"], "overlap": ["a", "b"], "anywhere": ["anchor"]}
 STRUCT_LISTS = {"cluster": "names", "chain": "names", "bingo": "names"}
@@ -169,7 +181,8 @@ BIOME_KEYS = {"biome": ["name"], "biome_area": ["name"], "biome_border": ["a", "
 BIOME_LISTS = {"island": "biomes", "biome_count": "among"}
 INT_KEYS = {"within", "dist", "radius", "step", "window", "count", "y", "margin"}
 CHOICES = {"param": ["temperature", "humidity", "continentalness", "erosion", "depth", "weirdness"], "fluid": ["lava", "water"],
-           "heightmap": ["surface", "ocean_floor"]}
+           "heightmap": ["surface", "ocean_floor"], "depth": ["surface", "subsurface"]}
+OP_CHOICES = {"ore_vein": {"type": ["iron", "copper"], "count": ["raw", "ore", "all"]}}  # 'count' is a number elsewhere
 BIOME_TAGS = ["#is_ocean", "#is_deep_ocean", "#is_beach", "#is_river", "#is_mountain", "#is_hill", "#is_forest", "#is_taiga",
               "#is_jungle", "#is_savanna", "#is_badlands"]
 LOOT_STRUCTURES = ["buried_treasure", "shipwreck", "ruined_portal", "igloo", "desert_pyramid", "jungle_temple", "ocean_ruin"]
@@ -330,11 +343,12 @@ def _row(*widgets) -> QWidget:
 def make_field(editor, op: str, key: str, value, default) -> Field:
     """A widget for one parameter, and how to read it back."""
     names = editor.names
-    if key in STRUCT_KEYS.get(op, []) or key in BIOME_KEYS.get(op, []) or key in ("biome", "item") or key in CHOICES:
-        w = QComboBox(editable=key not in CHOICES)
+    choices = OP_CHOICES.get(op, {}).get(key) or CHOICES.get(key)
+    if key in STRUCT_KEYS.get(op, []) or key in BIOME_KEYS.get(op, []) or key in ("biome", "item") or choices:
+        w = QComboBox(editable=not choices)
         w.setMinimumContentsLength(13)
         w.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        pool = (CHOICES.get(key) or (names["loot_structures"] if op == "loot" and key == "name" else names["structures"] if key in STRUCT_KEYS.get(op, [])
+        pool = (choices or (names["loot_structures"] if op == "loot" and key == "name" else names["structures"] if key in STRUCT_KEYS.get(op, [])
                 else names["items"] if key == "item" else names["biomes"]))
         w.addItems(([""] if key in ("biome", "anchor") else []) + pool)
         w.setCurrentText(str(value if value is not None else default if default is not None else ""))

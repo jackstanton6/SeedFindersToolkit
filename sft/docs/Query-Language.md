@@ -206,6 +206,37 @@ spawn_distance() >= 1000
 maximize(spawn_distance())
 ```
 
+### block(name, within=0, at=(0,0), depth="surface") / block(name, ..., y=(lo, hi))
+
+How many blocks of `name` (a block, a list, or a `#tag` such as `"#minecraft:terracotta"`) are in
+the columns within `within` blocks of `at`: the top block of each column (`depth="surface"`), the
+8 blocks under it (`"subsurface"`), or every block from `y=lo` to `y=hi`.
+
+The chunks are generated for real: noise terrain, aquifers, surface blocks (grass, sand, snow,
+terracotta bands, ice), bedrock, ore veins and caves, exactly as the game makes them. Structures and
+decoration (trees, flowers, scattered ores, lakes, snow layers) are not placed yet, so results are
+marked `exact: false` and blocks those add are not counted. Every chunk in the circle is generated
+(about 40 ms each), so keep `within` small and put cheap conditions first. Chunks are cached per
+seed, so several block conditions share them; bedrock-only counts skip the cave step.
+
+```python
+block("red_sand", within=32) >= 800
+block("#minecraft:terracotta", within=24, depth="subsurface", at="spawn") >= 2000
+block("packed_ice", within=48, y=(64, 140)) >= 400
+```
+
+### ore_vein(type, count="raw", within=64, at=(0,0))
+
+Blocks of the large ore veins (`type` `"iron"`: deepslate iron ore and raw iron blocks at y -60 to
+-8; `"copper"`: copper ore and raw copper blocks at y 0 to 50) in the columns within `within` of
+`at`: raw ore blocks (`count="raw"`), ore (`"ore"`) or both (`"all"`). A `block()` count over the
+vein's y range, so the same notes apply. Record hunts: `maximize(ore_vein("iron", within=48))`.
+
+### spawn_block(name)
+
+Whether the top block at the world spawn is `name` (a block, list or `#tag`). Uses the spawn
+chunk's centre until the exact spawn block is ported.
+
 ### bedrock(blocks)
 
 How many observed floor blocks `[(x, y, z, is_bedrock), ...]` the seed reproduces; by default all of

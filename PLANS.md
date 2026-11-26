@@ -357,11 +357,16 @@ region files compared block by block).
   incl. trees, plants, ores, lakes, geodes, freeze_top_layer (snow, ice).
 - [ ] 7. Exact spawn block: setInitialSpawn's 11x11 chunk spiral over `getSpawnPosInChunk` on full
   chunks (structures and features included).
-- [ ] 8. Conditions: `block(name, at, within, depth="surface"|"subsurface"|y=(lo, hi))` over full
+- [x] 8. Conditions: `block(name, at, within, depth="surface"|"subsurface"|y=(lo, hi))` over full
   chunks; `spawn_block(name)`; `ore_vein(type, at, within)` (vein size, raw ore blocks; record
   hunts); scattered ores via `block(...)`. Presets: red sand desert, ice spikes, terracotta at spawn.
-- [ ] 9. Cost: per-seed, per-thread chunk cache shared by all block conditions and spawn; each
-  query generates only up to the last step that can change its blocks (same results).
+  Done over TERRAIN-status chunks (noise, surface, carvers); details say `exact: false` until
+  structures and features (items 5, 6) are placed. `ore_vein` counts blocks of the vein types in
+  the disc (count=raw|ore|all), not per connected vein.
+- [x] 9. Cost: per-seed, per-thread chunk cache shared by all block conditions and spawn; each
+  query generates only up to the last step that can change its blocks (same results). One
+  `Chunks` per evaluation; bedrock-only sets stop before the carvers (bedrock is uncarvable).
+  To extend when structures and features exist.
 - [x] 10. Bedrock cracking: a bedrock-pattern observation that picks the right sister of a cracked
   structure seed (CPU and GPU). Plus a time-boxed study of a bedrock-only attack, written up here.
   `bedrock(blocks=...)` (gradient check, GPU atom, confirmed on generated chunks), `crack --bedrock`,

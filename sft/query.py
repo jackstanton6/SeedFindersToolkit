@@ -28,6 +28,7 @@ POSITIONAL = {
     "biome_border": ["a", "b"], "island": [], "climate": ["param"], "height": [], "peak": [], "trench": [],
     "cliff": [], "overhang": [], "void": [], "lake": ["fluid"], "slime": [], "loot": ["name", "item"], "portal_frame": [],
     "portal_obsidian": [], "spawn_distance": [], "bedrock": ["blocks"],
+    "block": ["name"], "spawn_block": ["name"], "ore_vein": ["type"],
     "native": ["plugin", "filter"], "py": ["name"], "maximize": ["expr"], "minimize": ["expr"], "anywhere": ["cond"],
 }
 CALLS = set(POSITIONAL)

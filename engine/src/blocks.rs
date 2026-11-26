@@ -97,6 +97,16 @@ impl Blocks {
         self.block_of[s as usize] as usize
     }
 
+    /// The block (not state) index of a state, for per-block tables.
+    pub fn index(&self, s: State) -> usize {
+        self.block(s)
+    }
+
+    /// Number of blocks (the length of per-block tables).
+    pub fn count(&self) -> usize {
+        self.names.len()
+    }
+
     pub fn name(&self, s: State) -> &str {
         &self.names[self.block(s)]
     }

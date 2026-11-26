@@ -12,6 +12,7 @@ use crate::world::{BiomeCtx, Block, Heightmap, Seeded, World};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::sync::Arc;
 
 pub const CLIMATE_PARAMS: [&str; 6] = ["temperature", "humidity", "continentalness", "erosion", "depth", "weirdness"];
 
@@ -23,6 +24,17 @@ pub struct Sel {
     pub only: Option<usize>,
     pub biomes: Option<BiomeSet>,
     pub tags: Vec<String>,
+}
+
+/// Which blocks of a column a block condition looks at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Depth {
+    /// The top non-air block.
+    Surface,
+    /// The 8 blocks under the top block.
+    Subsurface,
+    /// Every block with lo <= y <= hi.
+    Range(i32, i32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +67,10 @@ pub enum Metric {
     Height { at: (i32, i32), ocean_floor: bool },
     Terrain { kind: Terrain, at: (i32, i32), within: i32, step: i32 },
     Slime { radius: i32, at: (i32, i32), within: i32 },
+    /// Blocks of a set in the columns within `within` of `at`, at a depth.
+    Block { blocks: Arc<Vec<bool>>, at: (i32, i32), within: i32, depth: Depth },
+    /// Whether the block under the spawn is in a set (1 or 0).
+    SpawnBlock { blocks: Arc<Vec<bool>> },
     /// Observed floor blocks (x, y, z, is bedrock): how many the seed reproduces.
     Bedrock { blocks: Vec<(i32, i32, i32, bool)> },
     /// `item` in the chests of one structure (the best one), or of all of them with `total`.
@@ -150,6 +166,9 @@ fn arguments(op: &str) -> &'static [&'static str] {
         "lake" => &["fluid", "at", "within", "step"],
         "slime" => &["radius", "at", "within"],
         "bedrock" => &["blocks"],
+        "block" => &["name", "at", "within", "depth", "y"],
+        "spawn_block" => &["name"],
+        "ore_vein" => &["type", "count", "at", "within"],
         "loot" => &["name", "item", "enchant", "at", "within", "total", "biome", "tags"],
         "portal_frame" | "portal_obsidian" => &["at", "within"],
         "spawn_distance" => &[],
@@ -229,6 +248,36 @@ impl Parser<'_> {
             biomes: v.get("biome").map(|b| self.biomes(b)).transpose()?,
             tags: v.get("tags").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default(),
         })
+    }
+
+    /// Block names and #tags (one or a list) as a per-block table.
+    fn block_set(&self, v: &Value) -> Result<Arc<Vec<bool>>, String> {
+        // block conditions generate chunks: refuse now if the rules or carvers cannot load
+        self.w.materials()?;
+        self.w.carvers()?;
+        let b = &self.w.blocks;
+        let names: Vec<&str> = match v {
+            Value::String(s) => vec![s.as_str()],
+            Value::Array(a) if !a.is_empty() => a.iter().map(|x| x.as_str().ok_or(format!("block names must be strings, got {x}"))).collect::<Result<_, _>>()?,
+            _ => return Err(format!("needs a block name, tag or list of them in 'name', got {v}")),
+        };
+        let mut table = vec![false; b.count()];
+        for n in names {
+            match n.strip_prefix('#') {
+                Some(tag) => {
+                    let t = b.tag_table(&crate::density::ns(tag));
+                    if !t.iter().any(|&x| x) {
+                        return Err(format!("unknown or empty block tag #{tag}"));
+                    }
+                    table.iter_mut().zip(t).for_each(|(a, x)| *a |= x);
+                }
+                None => {
+                    let s = b.state(n).ok_or_else(|| format!("unknown block '{n}'"))?;
+                    table[b.index(s)] = true;
+                }
+            }
+        }
+        Ok(Arc::new(table))
     }
 
     fn sels(&self, v: &Value, k: &str) -> Result<Vec<Sel>, String> {
@@ -341,6 +390,33 @@ impl Parser<'_> {
                 (Metric::Terrain { kind, at, within, step: int(v, "step", 32).max(1) }, min, inf)
             }
             "slime" => (Metric::Slime { radius: int(v, "radius", 128).max(0), at, within }, 1.0, inf),
+            "block" => {
+                let depth = match (v.get("y"), v["depth"].as_str()) {
+                    (Some(y), _) => {
+                        let (lo, hi) = pair(v, "y", (0, 0)).map_err(|_| format!("block: 'y' must be a range (lo, hi), got {y}"))?;
+                        Depth::Range(lo.min(hi), lo.max(hi))
+                    }
+                    (None, None | Some("surface")) => Depth::Surface,
+                    (None, Some("subsurface")) => Depth::Subsurface,
+                    (None, Some(d)) => return Err(format!("block: depth must be \"surface\" or \"subsurface\" (or give y=(lo, hi)), got \"{d}\"")),
+                };
+                (Metric::Block { blocks: self.block_set(&v["name"])?, at, within: int(v, "within", 0), depth }, 1.0, inf)
+            }
+            "spawn_block" => (Metric::SpawnBlock { blocks: self.block_set(&v["name"])? }, 1.0, inf),
+            "ore_vein" => {
+                // OreVeinRule.VeinType: ore, raw ore block and y range
+                let (ore, raw, lo, hi) = match choice(v, "type", &["iron", "copper"])? {
+                    "iron" => ("minecraft:deepslate_iron_ore", "minecraft:raw_iron_block", -60, -8),
+                    _ => ("minecraft:copper_ore", "minecraft:raw_copper_block", 0, 50),
+                };
+                let names: Vec<&str> = match choice(v, "count", &["raw", "ore", "all"])? {
+                    "raw" => vec![raw],
+                    "ore" => vec![ore],
+                    _ => vec![ore, raw],
+                };
+                let blocks = self.block_set(&serde_json::json!(names))?;
+                (Metric::Block { blocks, at, within: int(v, "within", 64), depth: Depth::Range(lo, hi) }, 1.0, inf)
+            }
             "bedrock" => {
                 let bad = || format!("bedrock needs blocks=[(x, y, z, True/False), ...], got {}", v["blocks"]);
                 let blocks: Vec<(i32, i32, i32, bool)> = v["blocks"]
@@ -479,7 +555,8 @@ impl Metric {
             }
             // anchored to the spawn, not to the moved point
             // world coordinates, never moved
-            Metric::Native { .. } | Metric::Spawn(_) | Metric::SpawnDistance | Metric::Bedrock { .. } => {}
+            Metric::Block { at, .. } => mv(at, d),
+            Metric::Native { .. } | Metric::Spawn(_) | Metric::SpawnDistance | Metric::Bedrock { .. } | Metric::SpawnBlock { .. } => {}
         }
     }
 }
@@ -782,6 +859,8 @@ pub struct Eval<'w> {
     pub w: &'w World,
     pub seed: i64,
     spawn: Option<(i32, i32)>,
+    /// Generated chunks of this seed, shared by every block condition.
+    chunks: Option<crate::chunk::Chunks<'w>>,
     pub(crate) s: Option<Seeded<'w>>,
     pub(crate) bc: BiomeCtx,
     hits: HashMap<(usize, i32, i32), Option<Hit>>,
@@ -794,7 +873,7 @@ pub struct Eval<'w> {
 
 impl<'w> Eval<'w> {
     pub fn new(w: &'w World, seed: i64, natives: &'w [Native]) -> Self {
-        Eval { w, seed, spawn: None, s: None, bc: BiomeCtx::cached(), hits: HashMap::new(), rings: HashMap::new(), natives, details: vec![], score: 0.0 }
+        Eval { w, seed, spawn: None, chunks: None, s: None, bc: BiomeCtx::cached(), hits: HashMap::new(), rings: HashMap::new(), natives, details: vec![], score: 0.0 }
     }
 
     pub(crate) fn seeded(&mut self) -> &mut Seeded<'w> {
@@ -1008,13 +1087,49 @@ impl<'w> Eval<'w> {
         if fast < blocks.len() {
             return fast;
         }
-        let mut ch = crate::chunk::Chunks::new(self.w, self.seed);
+        let (w, seed) = (self.w, self.seed);
+        let ch = self.chunks.get_or_insert_with(|| crate::chunk::Chunks::new(w, seed));
         blocks
             .iter()
-            .filter(|&&(x, y, z, want)| {
-                ch.surface(x >> 4, z >> 4).is_ok_and(|c| (self.w.blocks.name(c.get(self.w, x, y, z)) == "minecraft:bedrock") == want)
-            })
+            .filter(|&&(x, y, z, want)| ch.surface(x >> 4, z >> 4).is_ok_and(|c| (w.blocks.name(c.get(w, x, y, z)) == "minecraft:bedrock") == want))
             .count()
+    }
+
+    /// Blocks of `blocks` in the columns within `within` of `at`. Chunks are generated whole and
+    /// cached for the seed; bedrock-only sets stop before the carvers (they cannot carve bedrock).
+    fn count_blocks(&mut self, blocks: &[bool], at: (i32, i32), within: i32, depth: Depth) -> usize {
+        let (w, seed) = (self.w, self.seed);
+        let bedrock_only = w.blocks.state("bedrock").is_some_and(|b| blocks.iter().enumerate().all(|(i, &x)| !x || i == w.blocks.index(b)));
+        let ch = self.chunks.get_or_insert_with(|| crate::chunk::Chunks::new(w, seed));
+        let r = within.max(0);
+        let r2 = (r as i64) * (r as i64);
+        let mut n = 0;
+        for cx in (at.0 - r) >> 4..=(at.0 + r) >> 4 {
+            for cz in (at.1 - r) >> 4..=(at.1 + r) >> 4 {
+                let c = match if bedrock_only { ch.surface(cx, cz) } else { ch.terrain(cx, cz) } {
+                    Ok(c) => c,
+                    Err(e) => panic!("{e}"),
+                };
+                for lz in 0..16 {
+                    for lx in 0..16 {
+                        let (x, z) = (cx * 16 + lx, cz * 16 + lz);
+                        if dist2((x, z), at) > r2 {
+                            continue;
+                        }
+                        let top = c.height(crate::chunk::WORLD_SURFACE_WG, x, z);
+                        let (lo, hi) = match depth {
+                            Depth::Surface => (top, top),
+                            Depth::Subsurface => (top - 8, top - 1),
+                            Depth::Range(lo, hi) => (lo, hi),
+                        };
+                        for y in lo.max(c.min_y)..=hi.min(c.min_y + c.height - 1) {
+                            n += w.blocks.in_table(blocks, c.get(w, x, y, z)) as usize;
+                        }
+                    }
+                }
+            }
+        }
+        n
     }
 
     fn slime_max(&self, radius: i32, at: (i32, i32), within: i32) -> i32 {
@@ -1244,6 +1359,28 @@ impl<'w> Eval<'w> {
             Metric::Terrain { kind, at, within, step } => self.terrain(*kind, *at, *within, *step),
             Metric::Slime { radius, at, within } => self.slime_max(*radius, *at, *within) as f64,
             Metric::Bedrock { blocks } => self.bedrock(blocks) as f64,
+            Metric::Block { blocks, at, within, depth } => {
+                let n = self.count_blocks(blocks, *at, *within, *depth);
+                if note {
+                    self.details.push(json!({"type": "blocks", "x": at.0, "z": at.1, "count": n, "exact": false}));
+                }
+                n as f64
+            }
+            Metric::SpawnBlock { blocks } => {
+                let p = self.spawn();
+                let (w, seed) = (self.w, self.seed);
+                let ch = self.chunks.get_or_insert_with(|| crate::chunk::Chunks::new(w, seed));
+                let c = match ch.terrain(p.0 >> 4, p.1 >> 4) {
+                    Ok(c) => c,
+                    Err(e) => panic!("{e}"),
+                };
+                let y = c.height(crate::chunk::WORLD_SURFACE_WG, p.0, p.1);
+                let st = c.get(w, p.0, y, p.1);
+                if note {
+                    self.details.push(json!({"type": "spawn_block", "x": p.0, "y": y, "z": p.1, "block": w.blocks.name(st), "exact": false}));
+                }
+                w.blocks.in_table(blocks, st) as i32 as f64
+            }
             Metric::Loot { s, item, enchant, at, within, total } => {
                 let loot = self.w.loot.as_ref().expect("parse refuses loot without tables");
                 let (mut best, mut sum) = (0, 0);

@@ -228,6 +228,19 @@ def test_spawn_anchors_conditions():
     assert "spawn" in refused("biome('plains', at='spwn')")
 
 
+def test_block_conditions():
+    # y = -64 is bedrock everywhere: one per column in the disc
+    columns = sum(1 for x in range(-8, 9) for z in range(-8, 9) if x * x + z * z <= 64)
+    res = check("block('bedrock', within=8, y=(-64, -64))")
+    assert res is not None and {"type": "blocks", "x": 0, "z": 0, "count": columns, "exact": False} in res, res
+    assert check(f"block('bedrock', within=8, y=(-64, -64)) > {columns}") is None
+    assert check("block('#minecraft:base_stone_overworld', y=(-30, -20)) >= 1") is not None
+    assert check("ore_vein('copper', count='all', within=32) >= 0") is not None
+    assert check("spawn_block(['grass_block', 'sand', 'snow_block', 'stone', 'dirt', 'gravel', 'podzol', 'red_sand', 'mud', 'mycelium']) >= 0") is not None
+    assert "unknown block 'stonee'" in refused("block('stonee')")
+    assert "depth must be" in refused("block('stone', depth='deep')")
+
+
 def test_cli_edge_cases():
     import subprocess
     import tempfile
@@ -253,5 +266,6 @@ if __name__ == "__main__":
     test_gpu_biome_checks_find_the_same_seeds()
     test_point_biome_checks_are_block_level()
     test_spawn_anchors_conditions()
+    test_block_conditions()
     test_cli_edge_cases()
     print("ok")
