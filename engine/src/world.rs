@@ -56,6 +56,7 @@ pub struct World {
     pub blocks: crate::blocks::Blocks,
     /// The overworld material rule tree (seed-independent), parsed on first use.
     pub materials: std::sync::OnceLock<Result<crate::chunk::Materials, String>>,
+    pub carvers: std::sync::OnceLock<Result<crate::carver::Carvers, String>>,
     pub material_rule: Value,
     pub biomes: Biomes,
     pub climate: Climate,
@@ -136,6 +137,7 @@ impl World {
             default_block: s["default_block"].as_str().unwrap_or("minecraft:stone").to_string(),
             blocks: crate::blocks::Blocks::load(dir)?,
             materials: std::sync::OnceLock::new(),
+            carvers: std::sync::OnceLock::new(),
             material_rule: s["material_rule"].clone(),
             aquifer_dfs,
             biomes,
@@ -328,25 +330,7 @@ impl<'w> Seeded<'w> {
     /// BiomeManager.getBiome: the block-level (F3) biome, zoomed from the stored chunk biomes with
     /// the obfuscated seed.
     pub fn block_biome(&self, bc: &mut BiomeCtx, x: i32, y: i32, z: i32) -> u16 {
-        let zoom = obfuscate_seed(self.seed);
-        let (ax, ay, az) = (x - 2, y - 2, z - 2);
-        let (px, py, pz) = (ax >> 2, ay >> 2, az >> 2);
-        let (fx, fy, fz) = ((ax & 3) as f64 / 4.0, (ay & 3) as f64 / 4.0, (az & 3) as f64 / 4.0);
-        let mut min_i = 0;
-        let mut min_d = f64::INFINITY;
-        for i in 0..8 {
-            let (xe, ye, ze) = (i & 4 == 0, i & 2 == 0, i & 1 == 0);
-            let (cx, cy, cz) = (if xe { px } else { px + 1 }, if ye { py } else { py + 1 }, if ze { pz } else { pz + 1 });
-            let (dx, dy, dz) = (if xe { fx } else { fx - 1.0 }, if ye { fy } else { fy - 1.0 }, if ze { fz } else { fz - 1.0 });
-            let d = fiddled_distance(zoom, cx, cy, cz, dx, dy, dz);
-            if min_d > d {
-                min_i = i;
-                min_d = d;
-            }
-        }
-        let bx = if min_i & 4 == 0 { px } else { px + 1 };
-        let by = if min_i & 2 == 0 { py } else { py + 1 };
-        let bz = if min_i & 1 == 0 { pz } else { pz + 1 };
+        let (bx, by, bz) = zoom(obfuscate_seed(self.seed), x, y, z);
         self.chunk_biome(bc, bx, by, bz)
     }
 
@@ -413,6 +397,28 @@ impl<'w> Seeded<'w> {
             }
         }
         out
+    }
+
+    /// Aquifer.computeSubstance for the chunk's aquifer (applyCarvingMask passes density 0):
+    /// `f` gets a function from (x, y, z, density) to the substance (Stone = null, keep).
+    pub fn with_aquifer<R>(&self, cx: i32, cz: i32, f: impl FnOnce(&mut dyn FnMut(i32, i32, i32, f64) -> Block) -> R) -> R {
+        let (min_y, height, sea) = (self.w.min_y, self.w.height, self.w.sea_level);
+        let t = self.terrain.as_ref().expect("prepare_terrain() first");
+        let vol = Volume::new(16, height, 16, cx * 16, min_y, cz * 16);
+        let mut ctx = Ctx::cached();
+        let mut aq = t.aquifer.as_ref().map(|s| Aquifer::new(s, t.aquifer_random, &vol, sea, &mut ctx));
+        let mut sub = |x: i32, y: i32, z: i32, d: f64| match aq.as_mut() {
+            Some(a) => a.substance(&mut ctx, x, y, z, d),
+            None => if d > 0.0 { Block::Stone } else { global_fluid(sea, y).at(y) },
+        };
+        f(&mut sub)
+    }
+
+    /// BiomeManager.getBiome over the point-path resolver (createUncachedResolver), as
+    /// applyCarvingMask's biome getter sees biomes.
+    pub fn block_biome_point(&self, bc: &mut BiomeCtx, x: i32, y: i32, z: i32) -> u16 {
+        let (bx, by, bz) = zoom(obfuscate_seed(self.seed), x, y, z);
+        self.biome(bc, bx, by, bz)
     }
 
     /// A named density function compiled for this seed (cachingSamplers().get(function)).
@@ -748,6 +754,29 @@ impl<'a> Aquifer<'a> {
         }
         global.ty
     }
+}
+
+/// BiomeManager.getBiome's corner choice: the quart (x, y, z) whose biome a block takes.
+fn zoom(seed: i64, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
+    let (ax, ay, az) = (x - 2, y - 2, z - 2);
+    let (px, py, pz) = (ax >> 2, ay >> 2, az >> 2);
+    let (fx, fy, fz) = ((ax & 3) as f64 / 4.0, (ay & 3) as f64 / 4.0, (az & 3) as f64 / 4.0);
+    let mut min_i = 0;
+    let mut min_d = f64::INFINITY;
+    for i in 0..8 {
+        let (xe, ye, ze) = (i & 4 == 0, i & 2 == 0, i & 1 == 0);
+        let (cx, cy, cz) = (if xe { px } else { px + 1 }, if ye { py } else { py + 1 }, if ze { pz } else { pz + 1 });
+        let (dx, dy, dz) = (if xe { fx } else { fx - 1.0 }, if ye { fy } else { fy - 1.0 }, if ze { fz } else { fz - 1.0 });
+        let d = fiddled_distance(seed, cx, cy, cz, dx, dy, dz);
+        if min_d > d {
+            min_i = i;
+            min_d = d;
+        }
+    }
+    let bx = if min_i & 4 == 0 { px } else { px + 1 };
+    let by = if min_i & 2 == 0 { py } else { py + 1 };
+    let bz = if min_i & 1 == 0 { pz } else { pz + 1 };
+    (bx, by, bz)
 }
 
 /// BiomeManager.getFiddledDistance

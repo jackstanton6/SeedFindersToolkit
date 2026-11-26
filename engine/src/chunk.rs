@@ -146,6 +146,8 @@ pub struct Materials {
     dfs: Vec<Df>,
     /// blocks_motion_in_heightmap, per block (OCEAN_FLOOR heightmaps).
     pub motion: Vec<bool>,
+    /// The uncarvable block tag, per block.
+    pub uncarvable: Vec<bool>,
     // MaterialSystem's fixed blocks
     white: State, orange: State, terracotta: State, yellow: State, brown: State, red: State, light_gray: State,
     packed_ice: State, snow_block: State, default: State,
@@ -258,6 +260,7 @@ impl Materials {
             randoms: p.randoms,
             dfs: p.dfs,
             motion: bl.tag_table("minecraft:blocks_motion_in_heightmap"),
+            uncarvable: bl.tag_table("minecraft:uncarvable"),
             white: st("white_terracotta")?, orange: st("orange_terracotta")?, terracotta: st("terracotta")?, yellow: st("yellow_terracotta")?,
             brown: st("brown_terracotta")?, red: st("red_terracotta")?, light_gray: st("light_gray_terracotta")?,
             packed_ice: st("packed_ice")?, snow_block: st("snow_block")?, default: st(&w.default_block)?,
@@ -339,6 +342,8 @@ struct Ctx2<'a> {
     prefilled: Vec<Option<Vec<f32>>>,
     prelim: Option<Vec<f32>>,
     vol: Volume,
+    /// Biomes zoomed over the point-path resolver (topMaterial in applyCarvingMask).
+    point_biomes: bool,
 }
 
 impl Surface {
@@ -426,7 +431,11 @@ fn make_bands(r: &mut AnyRng, b: &mut [State], base: i32, s: State) {
 impl Ctx2<'_> {
     fn biome(&mut self) -> u16 {
         if self.biome.is_none() {
-            self.biome = Some(self.s.block_biome(self.bc, self.x, self.y, self.z));
+            self.biome = Some(if self.point_biomes {
+                self.s.block_biome_point(self.bc, self.x, self.y, self.z)
+            } else {
+                self.s.block_biome(self.bc, self.x, self.y, self.z)
+            });
         }
         self.biome.unwrap()
     }
@@ -444,12 +453,12 @@ impl Ctx2<'_> {
             let level = match (&self.sf.preliminary, self.vol.index_of_block(self.x, self.vol.y0, self.z)) {
                 (Some(f), Some(_)) => {
                     if self.prelim.is_none() {
-                        let v = Volume::new(16, 1, 16, self.vol.x0, 0, self.vol.z0);
+                        let v = Volume::new(self.vol.sx, 1, self.vol.sz, self.vol.x0, 0, self.vol.z0);
                         let mut buf = vec![0.0; v.size()];
                         f.sample_volume(&mut self.ctx, &mut buf, &v);
                         self.prelim = Some(buf);
                     }
-                    let v = Volume::new(16, 1, 16, self.vol.x0, 0, self.vol.z0);
+                    let v = Volume::new(self.vol.sx, 1, self.vol.sz, self.vol.x0, 0, self.vol.z0);
                     self.prelim.as_ref().unwrap()[v.idx(self.x - v.x0, 0, self.z - v.z0)]
                 }
                 (Some(f), None) => f.sample(&mut self.ctx, self.x, 0, self.z),
@@ -555,10 +564,15 @@ impl World {
     pub fn materials(&self) -> Result<&Materials, String> {
         self.materials.get_or_init(|| Materials::load(self)).as_ref().map_err(Clone::clone)
     }
+
+    pub fn carvers(&self) -> Result<&crate::carver::Carvers, String> {
+        self.carvers.get_or_init(|| crate::carver::Carvers::load(self)).as_ref().map_err(Clone::clone)
+    }
 }
 
-/// The chunk after doFill (no structures) and buildSurface. `s` must have its terrain prepared.
-pub fn terrain_chunk(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, cx: i32, cz: i32) -> Result<Chunk, String> {
+/// The chunk after doFill (no structures), buildSurface and (with `carvers`) generateCarvers: the
+/// TERRAIN status. `s` must have its terrain prepared.
+pub fn terrain_chunk(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, cx: i32, cz: i32, carvers: bool) -> Result<Chunk, String> {
     let w = s.w;
     let m = w.materials()?;
     let mut c = Chunk { x: cx, z: cz, min_y: w.min_y, height: w.height, blocks: vec![w.blocks.air; (16 * 16 * w.height) as usize], heights: [[w.min_y; 256]; 2] };
@@ -578,7 +592,77 @@ pub fn terrain_chunk(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, cx: i32, cz: i
         }
     }
     build_surface(s, sf, bc, &mut c)?;
+    if carvers {
+        carve(s, sf, bc, &mut c)?;
+    }
     Ok(c)
+}
+
+/// NoiseBasedChunkGenerator.generateCarvers + applyCarvingMask
+fn carve(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, c: &mut Chunk) -> Result<(), String> {
+    let w = s.w;
+    let m = w.materials()?;
+    let carvers = w.carvers()?;
+    let mut point = BiomeCtx::uncached();
+    let mask = carvers.mask(w, s.seed, c.x, c.z, |qx, qz| s.biome(&mut point, qx, 0, qz));
+    if mask.is_empty() {
+        return Ok(());
+    }
+    let (grass, mycelium, dirt) = (w.blocks.state("grass_block"), w.blocks.state("mycelium"), w.blocks.state("dirt"));
+    let is = |st: State, b: Option<State>| b.is_some_and(|b| w.blocks.name(st) == w.blocks.name(b));
+    s.with_aquifer(c.x, c.z, |sub| {
+        let mut runs = vec![];
+        mask.visit(|x, z, bottom, top| runs.push((x, z, bottom, top)));
+        for (x, z, bottom, top) in runs {
+            let mut has_grass = false;
+            let (wx, wz) = (c.x * 16 + x, c.z * 16 + z);
+            for y in (bottom..=top).rev() {
+                let old = c.get(w, wx, y, wz);
+                if w.blocks.in_table(&m.uncarvable, old) {
+                    continue;
+                }
+                if is(old, grass) || is(old, mycelium) {
+                    has_grass = true;
+                }
+                let st = match sub(wx, y, wz, 0.0) {
+                    Block::Stone => continue, // null: nothing to place
+                    Block::Air => w.blocks.air,
+                    Block::Water => w.blocks.water,
+                    Block::Lava => w.blocks.lava,
+                };
+                c.set(m, w, wx, y, wz, st);
+                if has_grass && is(c.get(w, wx, y - 1, wz), dirt) {
+                    let under_fluid = w.blocks.has_fluid(st);
+                    if let Some(top) = top_material(s, sf, bc, c, wx, y - 1, wz, under_fluid) {
+                        c.set(m, w, wx, y - 1, wz, top);
+                    }
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+/// MaterialSystem.topMaterial: the rules for one block (a 1x1x1 volume), with biomes zoomed over
+/// the point-path resolver.
+#[allow(clippy::too_many_arguments)]
+fn top_material(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, c: &Chunk, x: i32, y: i32, z: i32, under_fluid: bool) -> Option<State> {
+    let w = s.w;
+    let m = w.materials().ok()?;
+    let mut cx = Ctx2 {
+        w, m, sf, bc, s, ctx: Ctx::cached(), x, y, z, grad_x: 0, grad_z: 0, surface_depth: 0, secondary: None, min_surface: None,
+        water_height: 0, stone_below: 0, stone_above: 0, biome: None, prefilled: vec![None; sf.dfs.len()], prelim: None,
+        vol: Volume::new(1, 1, 1, x, y, z), point_biomes: true,
+    };
+    let hm = |x: i32, z: i32| c.height(WORLD_SURFACE_WG, x, z);
+    let (lx, lz) = (x & 15, z & 15);
+    cx.grad_x = hm((lx + 1).min(15), lz) - hm((lx - 1).max(0), lz);
+    cx.grad_z = hm(lx, (lz + 1).min(15)) - hm(lx, (lz - 1).max(0));
+    cx.surface_depth = sf.surface_depth(x, z);
+    cx.stone_above = 1;
+    cx.stone_below = 1;
+    cx.water_height = if under_fluid { y + 1 } else { i32::MIN };
+    cx.apply(&m.rule)
 }
 
 /// MaterialSystem.buildSurface
@@ -593,6 +677,7 @@ fn build_surface(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, c: &mut Chunk) -> 
     let mut cx = Ctx2 {
         w, m, sf, bc, s, ctx: Ctx::cached(), x: 0, y: 0, z: 0, grad_x: 0, grad_z: 0, surface_depth: 0, secondary: None, min_surface: None,
         water_height: 0, stone_below: 0, stone_above: 0, biome: None, prefilled: vec![None; sf.dfs.len()], prelim: None, vol,
+        point_biomes: false,
     };
     for lx in 0..16 {
         for lz in 0..16 {
@@ -752,12 +837,17 @@ impl<'w> Chunks<'w> {
         if let Some(c) = self.cache.get(&(cx, cz)) {
             return Ok(c.clone());
         }
+        let c = Arc::new(self.generate(cx, cz, true)?);
+        self.cache.insert((cx, cz), c.clone());
+        Ok(c)
+    }
+
+    /// A chunk without caching; `carvers` false stops after the material rules.
+    pub fn generate(&mut self, cx: i32, cz: i32, carvers: bool) -> Result<Chunk, String> {
         if self.sf.is_none() {
             let m = self.s.w.materials()?;
             self.sf = Some(Surface::new(m, &mut self.s));
         }
-        let c = Arc::new(terrain_chunk(&self.s, self.sf.as_ref().unwrap(), &mut self.bc, cx, cz)?);
-        self.cache.insert((cx, cz), c.clone());
-        Ok(c)
+        terrain_chunk(&self.s, self.sf.as_ref().unwrap(), &mut self.bc, cx, cz, carvers)
     }
 }

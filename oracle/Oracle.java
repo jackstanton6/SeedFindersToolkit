@@ -47,7 +47,7 @@ public class Oracle {
     /// Chunks after the noise fill and the material rules (NoiseBasedChunkGenerator.doFill and
     /// buildSurface, called by reflection; no structures, so no beardifier; carvers not run). Chunks
     /// are picked to cover many surface biomes. Blocks: palette + run-length pairs in y, z, x order.
-    static void surface(StringBuilder sb, long seed, int count) throws Exception {
+    static void surface(StringBuilder sb, long seed, int count, boolean carvers) throws Exception {
         Object[] reg = serverRegistries();
         var world = (net.minecraft.core.RegistryAccess.Frozen) reg[0];
         var access = (net.minecraft.core.RegistryAccess) reg[1];
@@ -67,6 +67,10 @@ public class Oracle {
             net.minecraft.world.level.levelgen.NoiseChunk.class, RandomState.class, BiomeManager.class, java.util.Set.class,
             net.minecraft.world.level.levelgen.material.rule.MaterialRule.class);
         buildSurface.setAccessible(true);
+        var generateCarvers = NoiseBasedChunkGenerator.class.getDeclaredMethod("generateCarvers", net.minecraft.world.level.chunk.ChunkAccess.class,
+            net.minecraft.world.level.levelgen.blending.Blender.class, net.minecraft.world.level.levelgen.NoiseChunk.class, RandomState.class, BiomeManager.class,
+            net.minecraft.server.level.WorldGenRegion.class, net.minecraft.world.level.levelgen.material.rule.MaterialRule.class);
+        generateCarvers.setAccessible(true);
         // stored chunk biomes for the zoom, as in blockbiomes
         java.util.Map<Long, BiomeResolver> chunks = new java.util.HashMap<>();
         BiomeResolver stored = (qx, qy, qz) -> chunks.computeIfAbsent(((long) (qx >> 2) << 32) ^ ((qz >> 2) & 0xFFFFFFFFL),
@@ -94,6 +98,10 @@ public class Oracle {
                     net.minecraft.world.level.levelgen.blending.Blender.empty(), volume)) {
                 doFill.invoke(gen, noise, chunk);
                 buildSurface.invoke(gen, chunk, noise, rs, manager, source.possibleBiomes(), settings.value().materialRule().value());
+                if (carvers) {
+                    generateCarvers.invoke(gen, chunk, net.minecraft.world.level.levelgen.blending.Blender.empty(), noise, rs, manager, null,
+                        settings.value().materialRule().value());
+                }
             }
             if (done++ > 0) sb.append(',');
             sb.append("{\"x\":").append(cx).append(",\"z\":").append(cz).append(",\"biome\":\"").append(b).append("\",\"palette\":[");
@@ -338,7 +346,9 @@ public class Oracle {
             }
             sb.append(']');
         } else if (mode.equals("surface")) {
-            surface(sb, seed, count);
+            surface(sb, seed, count, false);
+        } else if (mode.equals("carvers")) {
+            surface(sb, seed, count, true);
         } else if (mode.equals("structures")) {
             structures(sb, seed, count);
         } else {

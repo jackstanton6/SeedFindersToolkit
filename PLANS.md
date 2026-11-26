@@ -343,7 +343,10 @@ region files compared block by block).
   worldgen heightmaps after the noise step. Block states are the game's ids (`blocks.rs`, from the
   data generator's blocks.json; block tags extracted too). Oracle: doFill + buildSurface called by
   reflection on real ProtoChunks, 240 chunks over 56 biomes, every block and heightmap equal.
-- [ ] 4. Carvers: overworld caves and canyons (with aquifer interaction).
+- [x] 4. Carvers: overworld caves and canyons (with aquifer interaction). `carver.rs`: literal
+  ports (Mth.sin table, float/double order), the 17x17 source-chunk loop, CarvingMask runs,
+  applyCarvingMask with topMaterial (biomes zoomed over the point resolver). Oracle: generateCarvers
+  by reflection after doFill + buildSurface, 240 chunks, 173,704 carved blocks, all equal.
 - [ ] 5. Structure pieces: block placement for every overworld structure (templates, processors,
   jigsaw, Beardifier terrain adaptation). Mineshaft depth becomes exact.
 - [ ] 6. Features: every overworld placed feature in decoration order (decoration seed per step),

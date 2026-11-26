@@ -143,12 +143,22 @@ fn norm_state(s: &str) -> String {
 #[test]
 #[ignore]
 fn surface_chunks_match() {
+    chunks_match("surface", false);
+}
+
+#[test]
+#[ignore]
+fn carved_chunks_match() {
+    chunks_match("carvers", true);
+}
+
+fn chunks_match(mode: &str, carvers: bool) {
     use sft_engine::chunk::{Chunks, OCEAN_FLOOR_WG, WORLD_SURFACE_WG};
     use std::collections::BTreeMap;
     let w = world();
     let (mut bad, mut bad_h, mut total) = (0usize, 0usize, 0usize);
     let mut kinds: BTreeMap<(String, String, String), usize> = BTreeMap::new();
-    for f in fixtures("surface") {
+    for f in fixtures(mode) {
         let seed = f["seed"].as_i64().unwrap();
         let mut ch = Chunks::new(w, seed);
         for c in f["chunks"].as_array().unwrap() {
@@ -159,7 +169,7 @@ fn surface_chunks_match() {
             for r in runs.chunks(2) {
                 want.extend(std::iter::repeat_n(r[0].as_u64().unwrap() as usize, r[1].as_u64().unwrap() as usize));
             }
-            let got = ch.terrain(cx, cz).unwrap();
+            let got = ch.generate(cx, cz, carvers).unwrap();
             for (i, &p) in want.iter().enumerate() {
                 let g = norm_state(&w.blocks.to_string(got.blocks[i]));
                 if g != pal[p] {

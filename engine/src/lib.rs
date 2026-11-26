@@ -5,6 +5,7 @@
 
 pub mod biome;
 pub mod blocks;
+pub mod carver;
 pub mod chunk;
 pub mod crack;
 pub mod density;
