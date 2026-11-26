@@ -10,6 +10,7 @@ pub mod chunk;
 pub mod feature;
 pub mod fluid;
 pub mod geode;
+pub mod patch;
 pub mod crack;
 pub mod density;
 pub mod gpu;
