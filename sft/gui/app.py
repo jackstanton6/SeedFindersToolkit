@@ -676,8 +676,7 @@ class Main(QMainWindow):
         text, ok = QInputDialog.getMultiLineText(
             self, "crack", "One structure per line as 'name x z' (block coordinates from /locate or F3).\n"
             "Huts, temples, outposts, igloos and shipwrecks narrow the search the most.\n"
-            "Optional last line 'query: ...' adds conditions (biomes, heights) for the sister check.
-"
+            "Optional last line 'query: ...' adds conditions (biomes, heights) for the sister check.\n"
             "Lines 'bedrock x y z yes' / 'bedrock x y z no' add the floor pattern (y -63 to -60): it picks the seed among the sisters.", "")
         if not ok or not text.strip():
             return
