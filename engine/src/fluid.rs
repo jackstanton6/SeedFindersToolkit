@@ -403,6 +403,45 @@ impl<'a> Region<'a> {
         self.spread(p, state, f);
     }
 
+    /// BubbleColumnBlock.canOccupy
+    fn can_occupy(&self, s: State) -> bool {
+        if self.w.blocks.name(s) == "minecraft:bubble_column" {
+            return true;
+        }
+        let f = self.fluid_of(s);
+        f.ty == 1 && self.is_liquid_block(s) && f.source && f.amount >= 8
+    }
+
+    /// BubbleColumnBlock.updateColumn
+    fn bubble_column(&mut self, p: (i32, i32, i32), below: State) {
+        let occupy = self.get(p.0, p.1, p.2);
+        if !self.can_occupy(occupy) {
+            return;
+        }
+        let b = &self.w.blocks;
+        let col = b.state("bubble_column").unwrap();
+        let column = if b.name(below) == "minecraft:bubble_column" {
+            below
+        } else if b.is(below, "minecraft:enables_bubble_column_push_up") {
+            b.with(col, "drag", "false").unwrap()
+        } else if b.is(below, "minecraft:enables_bubble_column_drag_down") {
+            b.with(col, "drag", "true").unwrap()
+        } else if b.name(occupy) == "minecraft:bubble_column" {
+            b.water
+        } else {
+            occupy
+        };
+        self.put(p.0, p.1, p.2, column);
+        let mut q = (p.0, p.1 + 1, p.2);
+        while self.can_occupy(self.get(q.0, q.1, q.2)) {
+            if self.chunk(q.0, q.2).is_none() {
+                return;
+            }
+            self.put(q.0, q.1, q.2, column);
+            q.1 += 1;
+        }
+    }
+
     /// LevelChunk.postProcessGeneration for the centre chunk, after the neighbours' marked
     /// positions next to it (a fluid tick reaches one block, so only those can spill into it).
     // ponytail: the game finishes chunks in no fixed order; neighbours first is the usual case
@@ -421,6 +460,12 @@ impl<'a> Region<'a> {
                     let f = self.fluid_of(state);
                     if f.ty != 0 {
                         self.tick(p, state, f);
+                    }
+                    // LiquidBlock.tick (called directly here): a full water source over magma or
+                    // soul sand becomes a bubble column
+                    if self.is_liquid_block(state) && f.ty == 1 && f.source && f.amount >= 8 {
+                        let below = self.get(p.0, p.1 - 1, p.2);
+                        self.bubble_column(p, below);
                     }
                     // LiquidBlock.tick only schedules bubble columns; other blocks would get
                     // updateFromNeighbourShapes

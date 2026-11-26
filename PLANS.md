@@ -414,8 +414,14 @@ features ~12,000 lines with 47 feature types behind 240 configured features; the
   incl. feature elements): villages, pillager outposts, ancient cities, trail ruins, trial chambers.
 - 5e. Beardifier (terrain adaptation) in doFill: the TERRAIN chunks next to structures.
 - 5f. Multi-piece legacy structures: stronghold, mineshaft (exact depth), ocean monument, mansion.
-- 6a. Decoration loop (applyBiomeDecoration: steps, FeatureSorter order, decoration and feature
-  seeds) and the placement modifiers.
+- [x] 6a. Decoration loop (applyBiomeDecoration: steps, FeatureSorter order, decoration and feature
+  seeds) and the placement modifiers. `feature.rs` (framework, predicates, providers, ores, disks,
+  selectors, simple_block, freeze), `geode.rs`; `fluid.rs` also makes bubble columns.
+  Check: `cargo test --release --test oracle deco_features -- --ignored` against
+  `tests/decoration_oracle.py features ...` worlds (4 areas). Ported features match; left at the
+  time of writing (77k -> ~40k differing blocks of 19.3M): kelp, trees (+ decorators, vines),
+  vegetation patches (moss, clay), speleothems (dripstone), underwater magma (bubble columns),
+  lakes, springs, and smaller ones (see the test's mismatch table).
 - 6b. Feature types, most common first: ores, disks, springs, lakes, freeze_top_layer, patches and
   simple blocks, trees (trunk/foliage placers, decorators), mushrooms, bamboo, ocean plants,
   icebergs, blue ice, geodes, fossils, dungeons, dripstone, lush caves, sculk, glow lichen, ...

@@ -295,7 +295,7 @@ impl HeightP {
 // ------------------------------------------------------------------------------------------------
 
 /// A HolderSet<Block>: per-block table.
-fn block_set(w: &World, v: &Value) -> Result<Arc<Vec<bool>>, String> {
+pub fn block_set(w: &World, v: &Value) -> Result<Arc<Vec<bool>>, String> {
     let b = &w.blocks;
     let mut t = vec![false; b.count()];
     let mut add = |n: &str| -> Result<(), String> {
@@ -892,6 +892,7 @@ pub enum Feature {
     Disk { provider: Provider, target: Pred, radius: IntP, half_height: i32 },
     SimpleBlock { to_place: Provider },
     Freeze,
+    Geode(Box<crate::geode::Geode>),
     /// A feature type that is not ported yet: places nothing.
     Unported(String),
 }
@@ -969,6 +970,7 @@ impl Registry {
             },
             "minecraft:simple_block" => Feature::SimpleBlock { to_place: Provider::parse(&v["to_place"], w)? },
             "minecraft:freeze_top_layer" => Feature::Freeze,
+            "minecraft:geode" => Feature::Geode(Box::new(crate::geode::Geode::parse(v, w)?)),
             t => Feature::Unported(t.to_string()),
         }))
     }
@@ -1164,6 +1166,7 @@ fn place_feature(cx: &mut Ctx, l: &mut Level, r: &mut WorldgenXoro, f: &Feature,
         Feature::Disk { provider, target, radius, half_height } => disk(l, r, provider, target, radius, *half_height, p),
         Feature::SimpleBlock { to_place } => simple_block(l, r, to_place, p),
         Feature::Freeze => freeze(l, p),
+        Feature::Geode(g) => crate::geode::geode(l, r, g, p),
     }
 }
 
