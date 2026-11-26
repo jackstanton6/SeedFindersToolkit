@@ -26,7 +26,7 @@ pub fn rel(p: P, d: usize) -> P {
     add(p, STEP[d])
 }
 
-fn direction(s: &str) -> Result<usize, String> {
+pub fn direction(s: &str) -> Result<usize, String> {
     ["down", "up", "north", "south", "west", "east"].iter().position(|d| *d == s).ok_or(format!("bad direction {s}"))
 }
 
@@ -977,7 +977,10 @@ impl Registry {
             t @ ("minecraft:vegetation_patch" | "minecraft:waterlogged_vegetation_patch") => {
                 Feature::Patch(Box::new(crate::patch::Patch::parse(v, w, self, t == "minecraft:waterlogged_vegetation_patch")?))
             }
-            "minecraft:tree" => Feature::Tree(Box::new(crate::tree::Tree::parse(v, w)?)),
+            "minecraft:tree" => match crate::tree::Tree::parse(v, w, self) {
+                Ok(t) => Feature::Tree(Box::new(t)),
+                Err(_) => Feature::Unported("minecraft:tree".into()),
+            },
             "minecraft:block_column" => Feature::BlockColumn(
                 v["layers"].as_array().ok_or("layers")?.iter().map(|x| Ok((IntP::parse(&x["height"])?, Provider::parse(&x["provider"], w)?))).collect::<Result<_, String>>()?,
                 direction(v["direction"].as_str().unwrap_or("up"))?,
@@ -1135,7 +1138,7 @@ pub fn place_nested(cx: &mut Ctx, l: &mut Level, r: &mut WorldgenXoro, pf: &Plac
     ok
 }
 
-fn place_feature(cx: &mut Ctx, l: &mut Level, r: &mut WorldgenXoro, f: &Feature, p: P) -> bool {
+pub fn place_feature(cx: &mut Ctx, l: &mut Level, r: &mut WorldgenXoro, f: &Feature, p: P) -> bool {
     match f {
         Feature::NoOp => true,
         Feature::Unported(_) => false,
@@ -1182,7 +1185,7 @@ fn place_feature(cx: &mut Ctx, l: &mut Level, r: &mut WorldgenXoro, f: &Feature,
         Feature::Freeze => freeze(l, p),
         Feature::Geode(g) => crate::geode::geode(l, r, g, p),
         Feature::Patch(g) => crate::patch::patch(cx, l, r, g, p),
-        Feature::Tree(t) => crate::tree::tree(l, r, t, p),
+        Feature::Tree(t) => crate::tree::tree(cx, l, r, t, p),
         Feature::BlockColumn(layers, dir, allowed, tip) => block_column(l, r, layers, *dir, allowed, *tip, p),
     }
 }
