@@ -28,6 +28,21 @@ public class Oracle {
         return b.unwrapKey().orElseThrow().identifier().toString();
     }
 
+    /// The biomes chunks store, filled like ChunkAccess.fillBiomesFromNoise (sections bottom up, x,
+    /// y, z within each; the R-tree warm start carries from search to search), read like
+    /// ChunkAccess.getNoiseBiome (y clamped).
+    static BiomeResolver storedBiomes(MultiNoiseBiomeSource source, RandomState rs) {
+        java.util.Map<Long, Holder<Biome>[]> chunks = new java.util.HashMap<>();
+        return (qx, qy, qz) -> chunks.computeIfAbsent(((long) (qx >> 2) << 32) ^ ((qz >> 2) & 0xFFFFFFFFL), k -> {
+            int x0 = (qx >> 2) * 4, z0 = (qz >> 2) * 4;
+            BiomeResolver r = source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), x0, -16, z0, 4, 96, 4);
+            @SuppressWarnings("unchecked") Holder<Biome>[] v = new Holder[4 * 96 * 4];
+            for (int sy = 0; sy < 24; sy++) for (int x = 0; x < 4; x++) for (int y = 0; y < 4; y++) for (int z = 0; z < 4; z++)
+                v[(z * 4 + x) * 96 + sy * 4 + y] = r.getNoiseBiome(x0 + x, sy * 4 + y - 16, z0 + z);
+            return v;
+        })[((qz & 3) * 4 + (qx & 3)) * 96 + Math.max(-16, Math.min(79, qy)) + 16];
+    }
+
     /// Registries as the server loads them (vanilla pack, tags bound): [0] = world, [1] = composite
     /// RegistryAccess, [2] = resource manager, [3] = layers.
     static Object[] serverRegistries() throws Exception {
@@ -72,10 +87,7 @@ public class Oracle {
             net.minecraft.server.level.WorldGenRegion.class, net.minecraft.world.level.levelgen.material.rule.MaterialRule.class);
         generateCarvers.setAccessible(true);
         // stored chunk biomes for the zoom, as in blockbiomes
-        java.util.Map<Long, BiomeResolver> chunks = new java.util.HashMap<>();
-        BiomeResolver stored = (qx, qy, qz) -> chunks.computeIfAbsent(((long) (qx >> 2) << 32) ^ ((qz >> 2) & 0xFFFFFFFFL),
-            k -> source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), (qx >> 2) * 4, -16, (qz >> 2) * 4, 4, 96, 4))
-            .getNoiseBiome(qx, Math.max(-16, Math.min(79, qy)), qz);
+        BiomeResolver stored = storedBiomes(source, rs);
         BiomeManager manager = new BiomeManager(stored, BiomeManager.obfuscateSeed(seed));
         BiomeResolver point = source.createResolver(rs.createClimateSampler(SamplerContext.EMPTY_UNCACHED));
         Random rand = new Random(seed ^ 0x5EED);
@@ -287,10 +299,7 @@ public class Oracle {
         } else if (mode.equals("blockbiomes")) {
             // BiomeManager.getBiome over what chunks store (createResolverForChunk, y clamped as in
             // ChunkAccess.getNoiseBiome), seeded like the server: obfuscateSeed(seed)
-            java.util.Map<Long, BiomeResolver> chunks = new java.util.HashMap<>();
-            BiomeResolver stored = (qx, qy, qz) -> chunks.computeIfAbsent(((long) (qx >> 2) << 32) ^ ((qz >> 2) & 0xFFFFFFFFL),
-                k -> source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), (qx >> 2) * 4, -16, (qz >> 2) * 4, 4, 96, 4))
-                .getNoiseBiome(qx, Math.max(-16, Math.min(79, qy)), qz);
+            BiomeResolver stored = storedBiomes(source, rs);
             BiomeManager manager = new BiomeManager(stored, BiomeManager.obfuscateSeed(seed));
             sb.append(",\"points\":[");
             for (int i = 0; i < count; i++) {
@@ -316,6 +325,36 @@ public class Oracle {
                     .append(',').append(chunk.x()).append(',').append(chunk.z()).append(']');
             }
             sb.append(']');
+        } else if (mode.equals("poolbiomes")) {
+            // chunk biomes with one shared DensityBufferPool (as a server worker thread) vs fresh buffers
+            var pool = new net.minecraft.world.level.levelgen.densityfunction.DensityBufferPool(64);
+            int diff = 0, total = 0;
+            for (int cx = 48; cx < 62; cx++) for (int cz = -56; cz < -42; cz++) {
+                BiomeResolver a = source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().useBufferArena(pool).build()), cx * 4, -16, cz * 4, 4, 96, 4);
+                BiomeResolver b = source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), cx * 4, -16, cz * 4, 4, 96, 4);
+                for (int qx = 0; qx < 4; qx++) for (int qz = 0; qz < 4; qz++) for (int qy = 0; qy < 96; qy++) {
+                    total++;
+                    if (!key(a.getNoiseBiome(cx * 4 + qx, qy - 16, cz * 4 + qz)).equals(key(b.getNoiseBiome(cx * 4 + qx, qy - 16, cz * 4 + qz)))) diff++;
+                }
+                pool.garbageCollect();
+            }
+            sb.append(",\"diff\":").append(diff).append(",\"total\":").append(total);
+            BiomeResolver one = source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), 55 * 4, -16, -52 * 4, 4, 96, 4);
+            sb.append(",\"q\":\"").append(key(one.getNoiseBiome(220, 0, -206))).append("\"");
+            BiomeResolver pt = source.createResolver(rs.createClimateSampler(SamplerContext.EMPTY_UNCACHED));
+            sb.append(",\"point\":\"").append(key(pt.getNoiseBiome(220, 0, -206))).append("\"");
+            Object[] reg = serverRegistries();
+            var world2 = (net.minecraft.core.RegistryAccess.Frozen) reg[0];
+            Holder<NoiseGeneratorSettings> set2 = world2.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+            RandomState rs2 = RandomState.create(world2.lookupOrThrow(Registries.NOISE), seed, set2.value());
+            MultiNoiseBiomeSource src2 = MultiNoiseBiomeSource.createFromPreset(
+                world2.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST).getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+            BiomeResolver two = src2.createResolverForChunk(rs2.createClimateSampler(SamplerContext.builder().enableCaches().build()), 55 * 4, -16, -52 * 4, 4, 96, 4);
+            sb.append(",\"json\":\"").append(key(two.getNoiseBiome(220, 0, -206))).append("\"");
+            var r1 = settings.value().noiseRouter(); var r2 = set2.value().noiseRouter();
+            DensityFunction[] c1 = {r1.temperature(), r1.vegetation(), r1.continents(), r1.erosion(), r1.depth(), r1.ridges()};
+            DensityFunction[] c2 = {r2.temperature(), r2.vegetation(), r2.continents(), r2.erosion(), r2.depth(), r2.ridges()};
+            for (int k = 0; k < 6; k++) sb.append(",\"c").append(k).append("\":[").append(rs.sampleBlockValueUncached(c1[k], 880, 0, -824)).append(',').append(rs2.sampleBlockValueUncached(c2[k], 880, 0, -824)).append(']');
         } else if (mode.equals("slime")) {
             // Slime.checkSlimeSpawnRules; far chunks exercise the int overflow in x*x*4987142
             sb.append(",\"chunks\":[");

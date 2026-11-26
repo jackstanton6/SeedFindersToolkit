@@ -398,7 +398,7 @@ Breakdown of 5-7 (measured: the game's structure code is ~19,600 lines of Java, 
 features ~12,000 lines with 47 feature types behind 240 configured features; the whole engine was
 ~11,800 lines when this was written). Each step ships on its own with zero mismatches:
 
-- 5a. Ground truth for decoration: dedicated-server worlds compared block for block (FULL chunks
+- [x] 5a. (done) Ground truth for decoration: dedicated-server worlds compared block for block (FULL chunks
   from region files, inner chunks only, as tests/export_oracle.py does), with datapacks that empty
   every biome's feature list (structures + beardifier alone) or remove every structure set
   (features alone), so each half can be verified without the other.

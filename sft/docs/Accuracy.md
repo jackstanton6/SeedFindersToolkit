@@ -14,6 +14,7 @@ the way the server loads them), dumps ground truth for random positions and seed
 | block-level (F3) biomes, `BiomeManager` zoom over stored chunk biomes | 80,000 blocks | 0 mismatches |
 | spawn search (`NoiseSpawnFinder`, `getOrigin`): position and chunk | 1,200 seeds | 0 mismatches |
 | chunk blocks after the noise fill and the material rules (surface blocks, terracotta bands, ice, bedrock, ore veins) and both worldgen heightmaps | 240 chunks (56 biomes) × 98,304 blocks | 0 mismatches |
+| FULL chunks of dedicated-server worlds with structures and features switched off (terrain, stored biomes, the post-processing fluid tick) | 196 chunks in 4 worlds, 19.3M blocks | 0 mismatches |
 | `export --mca` read back by the dedicated server (inner chunks of a 5x5 export) | 884,736 blocks | 0 changed |
 | floor bedrock from the bedrock_floor gradient alone (`bedrock()`, crack) | 368,640 floor blocks | 0 mismatches |
 | the same chunks after the cave and canyon carvers (aquifer fluids, grass/mycelium top fix-ups; 173,704 carved blocks) | 240 chunks | 0 mismatches |
@@ -52,7 +53,10 @@ cd engine && cargo test --release -- --ignored
 - **Spawn block.** `at="spawn"` uses the centre of the spawn chunk (exact) until full chunk
   generation lands; the game then moves the spawn to the first standable block in an 11x11 chunk
   spiral, usually inside that chunk (up to 8 blocks away).
-- **R-tree tie-breaking.** The game warm-starts each biome search from the previous result of the
+- **R-tree ties.** Stored chunk biomes are searched in the game's fill order, so ties resolve as
+  in real worlds except at a chunk's first quart, where the game continues from whatever that
+  worker thread searched before.
+- **R-tree tie-breaking (older note).** The game warm-starts each biome search from the previous result of the
   same thread, which only matters when two biome entries are at exactly the same distance. The
   engine keeps a warm start per evaluation context, so exact ties could in theory resolve
   differently. One appeared in the block-biome samples (1 in 80,000), and it matched once lookups

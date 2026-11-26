@@ -7,6 +7,7 @@ pub mod biome;
 pub mod blocks;
 pub mod carver;
 pub mod chunk;
+pub mod fluid;
 pub mod crack;
 pub mod density;
 pub mod gpu;
@@ -176,8 +177,7 @@ mod py {
                                 })
                                 .collect();
                             let heights = (0..2).flat_map(|hm| (0..256).map(move |k| (hm, k))).map(|(hm, k)| c.height(hm, k & 15, k >> 4)).collect();
-                            let qy = w.min_y >> 2;
-                            let biomes = ch.s.biomes_volume(&mut BiomeCtx::cached(), cx * 4, qy, cz * 4, 4, w.height >> 2, 4).iter().map(|&b| w.biomes.name(b).to_string()).collect();
+                            let biomes = ch.s.stored_biomes(cx, cz).iter().map(|&b| w.biomes.name(b).to_string()).collect();
                             Ok((cx, cz, palette, blocks, heights, biomes))
                         },
                     )

@@ -190,8 +190,8 @@ impl Heightmap {
 pub struct BiomeCtx {
     pub ctx: Ctx,
     pub last: Option<usize>,
-    /// Climate targets of chunks (volume path), for block-level lookups.
-    pub chunks: HashMap<(i32, i32), Vec<[i64; 7]>>,
+    /// Stored biomes of chunks (see `Seeded::stored_biomes`), for block-level lookups.
+    pub chunks: HashMap<(i32, i32), Vec<u16>>,
 }
 
 impl BiomeCtx {
@@ -320,16 +320,33 @@ impl<'w> Seeded<'w> {
     }
 
     /// The biome a chunk stores at a quart (ChunkAccess.getNoiseBiome: y clamped to the world).
-    /// Each chunk's 4x96x4 climate volume is sampled once with its own cached context; the R-tree
-    /// search runs per lookup, as in createResolverForChunk.
     pub fn chunk_biome(&self, bc: &mut BiomeCtx, qx: i32, qy: i32, qz: i32) -> u16 {
         let (cx, cz) = (qx >> 2, qz >> 2);
-        let t = bc.chunks.entry((cx, cz)).or_insert_with(|| self.climate_volume(&mut BiomeCtx::cached(), cx * 4, -16, cz * 4, 4, 96, 4));
-        // volume order: y fastest, then x, then z
-        let t = t[(((qz & 3) * 4 + (qx & 3)) * 96 + (qy.clamp(-16, 79) + 16)) as usize];
-        // ponytail: the R-tree warm start is thread-wide in the game, so where two biomes tie (rare)
-        // the stored biome depends on generation order; we follow this context's lookup order.
-        self.w.climate.search(&t, &mut bc.last)
+        let v = bc.chunks.entry((cx, cz)).or_insert_with(|| self.stored_biomes(cx, cz));
+        v[(((qz & 3) * 4 + (qx & 3)) * 96 + (qy.clamp(-16, 79) + 16)) as usize]
+    }
+
+    /// The biomes generation stores in a chunk (ChunkGenerator.doCreateBiomes): the climate of the
+    /// 4x96x4 volume, then the R-tree searched in fillBiomesFromNoise's order (sections bottom up,
+    /// x, y, z within one), each search warm-started by the one before. Where two biomes tie, that
+    /// order decides, as in the game. Index order: y fastest, then x, then z.
+    pub fn stored_biomes(&self, cx: i32, cz: i32) -> Vec<u16> {
+        let t = self.climate_volume(&mut BiomeCtx::cached(), cx * 4, -16, cz * 4, 4, 96, 4);
+        let mut out = vec![0u16; t.len()];
+        // ponytail: the chunk's first search starts fresh; the game continues from whatever that
+        // worker thread searched last, so a tie at the first quart can come out either way
+        let mut last = None;
+        for sy in 0..24 {
+            for x in 0..4 {
+                for y in 0..4 {
+                    for z in 0..4 {
+                        let i = ((z * 4 + x) * 96 + sy * 4 + y) as usize;
+                        out[i] = self.w.climate.search(&t[i], &mut last);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// BiomeManager.getBiome: the block-level (F3) biome, zoomed from the stored chunk biomes with
@@ -378,7 +395,7 @@ impl<'w> Seeded<'w> {
 
     /// NoiseBasedChunkGenerator.doFill's substances for a chunk (no structures, so no beardifier):
     /// index ((y - min_y) * 16 + z) * 16 + x. Stone stands for the default block.
-    pub fn noise_chunk(&self, cx: i32, cz: i32) -> Vec<Block> {
+    pub fn noise_chunk(&self, cx: i32, cz: i32) -> (Vec<Block>, Vec<bool>) {
         let (min_y, height, sea) = (self.w.min_y, self.w.height, self.w.sea_level);
         let t = self.terrain.as_ref().expect("prepare_terrain() first");
         let vol = Volume::new(16, height, 16, cx * 16, min_y, cz * 16);
@@ -387,6 +404,8 @@ impl<'w> Seeded<'w> {
         let mut buf = vec![0.0f32; vol.size()];
         t.final_density.sample_volume(&mut ctx, &mut buf, &vol);
         let mut out = vec![Block::Air; vol.size()];
+        // shouldScheduleFluidUpdate per block (doFill marks such fluids for post-processing)
+        let mut marks = vec![false; vol.size()];
         // doFill's order: z, x, then y from the top
         for iz in 0..16 {
             for ix in 0..16 {
@@ -394,27 +413,29 @@ impl<'w> Seeded<'w> {
                 for iy in (0..vol.sy).rev() {
                     let y = vol.by(iy);
                     let d = buf[vol.idx(ix, iy, iz)] as f64;
-                    out[((iy * 16 + iz) * 16 + ix) as usize] = match aq.as_mut() {
+                    let k = ((iy * 16 + iz) * 16 + ix) as usize;
+                    out[k] = match aq.as_mut() {
                         Some(a) => a.substance(&mut ctx, x, y, z, d),
                         None => if d > 0.0 { Block::Stone } else { global_fluid(sea, y).at(y) },
                     };
+                    marks[k] = aq.as_ref().is_some_and(|a| a.schedule);
                 }
             }
         }
-        out
+        (out, marks)
     }
 
     /// Aquifer.computeSubstance for the chunk's aquifer (applyCarvingMask passes density 0):
     /// `f` gets a function from (x, y, z, density) to the substance (Stone = null, keep).
-    pub fn with_aquifer<R>(&self, cx: i32, cz: i32, f: impl FnOnce(&mut dyn FnMut(i32, i32, i32, f64) -> Block) -> R) -> R {
+    pub fn with_aquifer<R>(&self, cx: i32, cz: i32, f: impl FnOnce(&mut dyn FnMut(i32, i32, i32, f64) -> (Block, bool)) -> R) -> R {
         let (min_y, height, sea) = (self.w.min_y, self.w.height, self.w.sea_level);
         let t = self.terrain.as_ref().expect("prepare_terrain() first");
         let vol = Volume::new(16, height, 16, cx * 16, min_y, cz * 16);
         let mut ctx = Ctx::cached();
         let mut aq = t.aquifer.as_ref().map(|s| Aquifer::new(s, t.aquifer_random, &vol, sea, &mut ctx));
         let mut sub = |x: i32, y: i32, z: i32, d: f64| match aq.as_mut() {
-            Some(a) => a.substance(&mut ctx, x, y, z, d),
-            None => if d > 0.0 { Block::Stone } else { global_fluid(sea, y).at(y) },
+            Some(a) => (a.substance(&mut ctx, x, y, z, d), a.schedule),
+            None => (if d > 0.0 { Block::Stone } else { global_fluid(sea, y).at(y) }, false),
         };
         f(&mut sub)
     }
@@ -518,6 +539,8 @@ struct Aquifer<'a> {
     location: Vec<Option<(i32, i32, i32)>>,
     surface: HashMap<(i32, i32), i32>,
     skip_above: i32,
+    /// shouldScheduleFluidUpdate after the last substance
+    schedule: bool,
     min_g: (i32, i32, i32),
     size_x: i32,
     size_z: i32,
@@ -539,6 +562,7 @@ impl<'a> Aquifer<'a> {
             location: vec![None; total],
             surface: HashMap::new(),
             skip_above: 0,
+            schedule: false,
             min_g: (min_gx, min_gy, min_gz),
             size_x, size_z,
         };
@@ -590,6 +614,7 @@ impl<'a> Aquifer<'a> {
     /// computeSubstance: Stone = "null" (default block), otherwise the fluid/air state.
     fn substance(&mut self, ctx: &mut Ctx, x: i32, y: i32, z: i32, density: f64) -> Block {
         use crate::rng::Rng;
+        self.schedule = false;
         if density > 0.0 {
             return Block::Stone;
         }
@@ -640,10 +665,17 @@ impl<'a> Aquifer<'a> {
         let s1 = self.status_at(ctx, idx[0]);
         let sim12 = similarity(d[0], d[1]);
         let fluid = s1.at(y);
+        // FLOWING_UPDATE_SIMULARITY = similarity(10^2, 12^2)
+        let flowing = similarity(100, 144);
         if sim12 <= 0.0 {
+            if sim12 >= flowing {
+                let s2 = self.status_at(ctx, idx[1]);
+                self.schedule = s1 != s2;
+            }
             return fluid;
         }
         if fluid == Block::Water && global_fluid(self.sea, y - 1).at(y - 1) == Block::Lava {
+            self.schedule = true;
             return fluid;
         }
         let mut barrier = f64::NAN;
@@ -660,6 +692,14 @@ impl<'a> Aquifer<'a> {
         if sim23 > 0.0 && density + sim12 * sim23 * self.pressure(ctx, x, y, z, &mut barrier, s2, s3) > 0.0 {
             return Block::Stone;
         }
+        let may12 = s1 != s2;
+        let may23 = sim23 >= flowing && s2 != s3;
+        let may13 = sim13 >= flowing && s1 != s3;
+        self.schedule = if !may12 && !may23 && !may13 {
+            sim13 >= flowing && similarity(d[0], d[3]) >= flowing && s1 != self.status_at(ctx, idx[3])
+        } else {
+            true
+        };
         fluid
     }
 

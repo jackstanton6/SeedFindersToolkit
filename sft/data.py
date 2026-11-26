@@ -93,10 +93,21 @@ def extract(version: str, server_jar: Path) -> None:
         raise RuntimeError(f"the data generator failed (java exit {gen.returncode}):\n{(gen.stderr or gen.stdout)[-2000:]}")
     shutil.copytree(work / "generated/reports/biome_parameters", out / "reports/biome_parameters", dirs_exist_ok=True)
     shutil.copy(work / "generated/reports/blocks.json", out / "reports/blocks.json")  # block states, ids, defaults
+    write_block_props(work, version, out / "reports" / "block_props.json")
     with zipfile.ZipFile(server_jar) as bundle, zipfile.ZipFile(io.BytesIO(bundle.read(f"META-INF/versions/{version}/server-{version}.jar"))) as jar:
         (out / "data_version.txt").write_text(str(json.loads(jar.read("version.json"))["world_version"]))  # chunk DataVersion
     write_items(work / "generated/reports/minecraft/components/item", out / "items.json")
     (out / "version.txt").write_text(version)
+
+
+def write_block_props(work: Path, version: str, dest: Path) -> None:
+    """Per block state the predicates worldgen asks for (collision shape kind, sturdy faces, fluid...),
+    computed by the game's classes (sft/java/BlockProps.java) from the extracted server."""
+    jars = [work / "versions" / version / f"server-{version}.jar", *sorted((work / "libraries").rglob("*.jar"))]
+    r = subprocess.run(["java", "-cp", os.pathsep.join(str(j) for j in jars), str(Path(__file__).parent / "java" / "BlockProps.java"), str(dest)],
+                       cwd=work, capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(f"block properties failed (java exit {r.returncode}):\n{(r.stderr or r.stdout)[-2000:]}")
 
 
 def write_items(report: Path, dest: Path) -> None:

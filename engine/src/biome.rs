@@ -94,6 +94,11 @@ impl Climate {
     }
 
     /// RTree.search with the per-thread `lastResult` warm start (`last` is the caller's slot).
+    /// Number of R-tree leaves (valid warm starts).
+    pub fn leaf_count(&self) -> usize {
+        self.leaves.len()
+    }
+
     pub fn search(&self, t: &[i64; 7], last: &mut Option<usize>) -> u16 {
         let leaf = self.search_node(&self.root, t, *last);
         *last = Some(leaf);

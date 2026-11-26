@@ -19,6 +19,8 @@ pub struct Blocks {
     /// State id -> block index.
     block_of: Vec<u16>,
     tags: HashMap<String, Vec<String>>,
+    /// reports/block_props.json per state: flags and fluid (type, amount, source, falling).
+    props_of: Vec<(u64, u8, u8, bool, bool)>,
     pub air: State,
     pub cave_air: State,
     pub void_air: State,
@@ -33,7 +35,7 @@ impl Blocks {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| format!("{}: {e} (run `python -m sft data <version>` again)", path.display()))?)
             .map_err(|e| e.to_string())?;
         let mut b = Blocks {
-            names: vec![], first: vec![], props: vec![], default: vec![], by_name: HashMap::new(), block_of: vec![], tags: HashMap::new(),
+            names: vec![], first: vec![], props: vec![], default: vec![], by_name: HashMap::new(), block_of: vec![], tags: HashMap::new(), props_of: vec![],
             air: 0, cave_air: 0, void_air: 0, stone: 0, water: 0, lava: 0,
         };
         let mut blocks: Vec<(&String, &Value)> = v.as_object().ok_or("blocks.json")?.iter().collect();
@@ -65,6 +67,16 @@ impl Blocks {
         for (id, v) in crate::world::json_dir(&data.join("minecraft/tags/block"))? {
             let vals = v["values"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().or_else(|| x["id"].as_str()).map(String::from)).collect()).unwrap_or_default();
             b.tags.insert(id, vals);
+        }
+        // optional until the data folder is set up again (`python -m sft data`): chunk generation needs it
+        if let Ok(text) = std::fs::read_to_string(data.join("reports/block_props.json")) {
+            let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            b.props_of = v
+                .as_array()
+                .ok_or("block_props.json")?
+                .iter()
+                .map(|e| (e[0].as_u64().unwrap_or(0), e[1].as_u64().unwrap_or(0) as u8, e[2].as_u64().unwrap_or(0) as u8, e[3].as_u64() == Some(1), e[4].as_u64() == Some(1)))
+                .collect();
         }
         let get = |b: &Blocks, n: &str| b.state(n).ok_or(format!("blocks.json has no {n}"));
         b.air = get(&b, "minecraft:air")?;
@@ -154,6 +166,59 @@ impl Blocks {
         format!("{}[{}]", self.names[b], vals.join(","))
     }
 
+    fn flags(&self, s: State) -> u64 {
+        self.props_of.get(s as usize).map_or(0, |p| p.0)
+    }
+
+    /// Whether reports/block_props.json was loaded.
+    pub fn has_props(&self) -> bool {
+        !self.props_of.is_empty()
+    }
+
+    /// BlockState.isSolid (the legacy "solid" flag)
+    pub fn is_solid(&self, s: State) -> bool {
+        self.flags(s) & 2 != 0
+    }
+
+    /// The collision shape is Shapes.block()
+    pub fn collision_full(&self, s: State) -> bool {
+        self.flags(s) & 4 != 0
+    }
+
+    /// The collision shape is empty
+    pub fn collision_empty(&self, s: State) -> bool {
+        self.flags(s) & 8 != 0
+    }
+
+    /// BlockState.canBeReplaced()
+    pub fn can_be_replaced(&self, s: State) -> bool {
+        self.flags(s) & 16 != 0
+    }
+
+    pub fn is_solid_render(&self, s: State) -> bool {
+        self.flags(s) & 32 != 0
+    }
+
+    pub fn has_dynamic_shape(&self, s: State) -> bool {
+        self.flags(s) & 256 != 0
+    }
+
+    /// isFaceSturdy(direction) with SupportType.FULL; directions in Direction order (down, up,
+    /// north, south, west, east).
+    pub fn face_sturdy(&self, s: State, dir: usize) -> bool {
+        self.flags(s) >> (16 + dir) & 1 != 0
+    }
+
+    /// Block.isFaceFull(collision shape, direction)
+    pub fn collision_face_full(&self, s: State, dir: usize) -> bool {
+        self.flags(s) >> (24 + dir) & 1 != 0
+    }
+
+    /// The fluid state: (0 none / 1 water / 2 lava, amount, source, falling).
+    pub fn fluid(&self, s: State) -> (u8, u8, bool, bool) {
+        self.props_of.get(s as usize).map_or((0, 0, false, false), |p| (p.1, p.2, p.3, p.4))
+    }
+
     /// BlockState.isAir
     pub fn is_air(&self, s: State) -> bool {
         s == self.air || s == self.cave_air || s == self.void_air
@@ -161,6 +226,9 @@ impl Blocks {
 
     /// !getFluidState().isEmpty(): water, lava (any level), bubble columns and waterlogged blocks.
     pub fn has_fluid(&self, s: State) -> bool {
+        if self.has_props() {
+            return self.fluid(s).0 != 0;
+        }
         let n = self.name(s);
         n == "minecraft:water" || n == "minecraft:lava" || n == "minecraft:bubble_column" || self.get(s, "waterlogged") == Some("true")
     }

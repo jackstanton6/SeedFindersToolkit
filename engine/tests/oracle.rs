@@ -152,11 +152,19 @@ fn carved_chunks_match() {
     chunks_match("carvers", true);
 }
 
+/// Server worlds with features and structures off (tests/decoration_oracle.py terrain ...).
+#[test]
+#[ignore]
+fn deco_terrain_matches() {
+    chunks_match("deco-terrain", true);
+}
+
 fn chunks_match(mode: &str, carvers: bool) {
+    let full = mode.starts_with("deco-");
     use sft_engine::chunk::{Chunks, OCEAN_FLOOR_WG, WORLD_SURFACE_WG};
     use std::collections::BTreeMap;
     let w = world();
-    let (mut bad, mut bad_h, mut total) = (0usize, 0usize, 0usize);
+    let (mut bad, mut bad_h, mut total, mut shown) = (0usize, 0usize, 0usize, 0usize);
     let mut kinds: BTreeMap<(String, String, String), usize> = BTreeMap::new();
     for f in fixtures(mode) {
         let seed = f["seed"].as_i64().unwrap();
@@ -169,18 +177,22 @@ fn chunks_match(mode: &str, carvers: bool) {
             for r in runs.chunks(2) {
                 want.extend(std::iter::repeat_n(r[0].as_u64().unwrap() as usize, r[1].as_u64().unwrap() as usize));
             }
-            let got = ch.generate(cx, cz, carvers).unwrap();
+            let got = if full { (*ch.full(cx, cz).unwrap()).clone() } else { ch.generate(cx, cz, carvers).unwrap() };
             for (i, &p) in want.iter().enumerate() {
                 let g = norm_state(&w.blocks.to_string(got.blocks[i]));
                 if g != pal[p] {
                     let y = (i / 256) as i32 + w.min_y;
+                    if std::env::var("SFT_SHOW").is_ok_and(|v| v == "all" || v == format!("{cx},{cz}")) || (!pal[p].contains("water") && !pal[p].contains("lava") && shown < 40) {
+                        shown += 1;
+                        eprintln!("  chunk ({cx},{cz}) block ({}, {y}, {}): want {} got {g}", cx * 16 + (i % 16) as i32, cz * 16 + (i / 16 % 16) as i32, pal[p]);
+                    }
                     let band = if y < 0 { "y<0" } else if y < 63 { "0..63" } else { "63+" };
-                    *kinds.entry((pal[p].clone(), g, format!("{} {band}", c["biome"].as_str().unwrap()))).or_default() += 1;
+                    *kinds.entry((pal[p].clone(), g, format!("{} {band}", c["biome"].as_str().unwrap_or("")))).or_default() += 1;
                     bad += 1;
                 }
                 total += 1;
             }
-            let h = c["heights"].as_array().unwrap();
+            let Some(h) = c["heights"].as_array() else { continue };
             for k in 0..256 {
                 let (x, z) = ((k & 15) as i32, (k >> 4) as i32);
                 let (gw, go) = (got.height(WORLD_SURFACE_WG, x, z), got.height(OCEAN_FLOOR_WG, x, z));

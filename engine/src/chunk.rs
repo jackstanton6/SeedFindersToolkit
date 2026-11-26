@@ -16,6 +16,7 @@ pub const OCEAN_FLOOR_WG: usize = 1;
 
 /// A chunk's blocks (index ((y - min_y) * 16 + z) * 16 + x) and its worldgen heightmaps (first
 /// free y per column, index z * 16 + x).
+#[derive(Clone)]
 pub struct Chunk {
     pub x: i32,
     pub z: i32,
@@ -23,6 +24,8 @@ pub struct Chunk {
     pub height: i32,
     pub blocks: Vec<State>,
     pub heights: [[i32; 256]; 2],
+    /// ProtoChunk.postProcessing: per section, packed positions in the order they were marked.
+    pub post: Vec<Vec<u16>>,
 }
 
 impl Chunk {
@@ -79,6 +82,14 @@ impl Chunk {
     }
 
     /// ChunkAccess.getHeight: the highest occupied y (first free - 1).
+    /// ProtoChunk.markPosForPostProcessing
+    pub fn mark(&mut self, x: i32, y: i32, z: i32) {
+        let sec = ((y - self.min_y) >> 4) as usize;
+        if let Some(list) = self.post.get_mut(sec) {
+            list.push(((x & 15) | (y & 15) << 4 | (z & 15) << 8) as u16);
+        }
+    }
+
     pub fn height(&self, hm: usize, x: i32, z: i32) -> i32 {
         self.heights[hm][((z & 15) * 16 + (x & 15)) as usize] - 1
     }
@@ -575,19 +586,26 @@ impl World {
 pub fn terrain_chunk(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, cx: i32, cz: i32, carvers: bool) -> Result<Chunk, String> {
     let w = s.w;
     let m = w.materials()?;
-    let mut c = Chunk { x: cx, z: cz, min_y: w.min_y, height: w.height, blocks: vec![w.blocks.air; (16 * 16 * w.height) as usize], heights: [[w.min_y; 256]; 2] };
+    let mut c = Chunk {
+        x: cx, z: cz, min_y: w.min_y, height: w.height, blocks: vec![w.blocks.air; (16 * 16 * w.height) as usize], heights: [[w.min_y; 256]; 2],
+        post: vec![vec![]; (w.height / 16) as usize],
+    };
     // doFill: air is not written; heightmaps follow the blocks top-down
-    let fill = s.noise_chunk(cx, cz);
+    let (fill, marks) = s.noise_chunk(cx, cz);
     for z in 0..16 {
         for x in 0..16 {
             for y in (w.min_y..w.min_y + w.height).rev() {
-                let st = match fill[(((y - w.min_y) * 16 + z) * 16 + x) as usize] {
+                let k = (((y - w.min_y) * 16 + z) * 16 + x) as usize;
+                let st = match fill[k] {
                     Block::Air => continue,
                     Block::Stone => m.default,
                     Block::Water => w.blocks.water,
                     Block::Lava => w.blocks.lava,
                 };
                 c.set(m, w, cx * 16 + x, y, cz * 16 + z, st);
+                if marks[k] && w.blocks.has_fluid(st) {
+                    c.mark(x, y, z);
+                }
             }
         }
     }
@@ -624,17 +642,24 @@ fn carve(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, c: &mut Chunk) -> Result<(
                 if is(old, grass) || is(old, mycelium) {
                     has_grass = true;
                 }
-                let st = match sub(wx, y, wz, 0.0) {
+                let (sub_block, schedule) = sub(wx, y, wz, 0.0);
+                let st = match sub_block {
                     Block::Stone => continue, // null: nothing to place
                     Block::Air => w.blocks.air,
                     Block::Water => w.blocks.water,
                     Block::Lava => w.blocks.lava,
                 };
                 c.set(m, w, wx, y, wz, st);
+                if schedule && w.blocks.has_fluid(st) {
+                    c.mark(wx, y, wz);
+                }
                 if has_grass && is(c.get(w, wx, y - 1, wz), dirt) {
                     let under_fluid = w.blocks.has_fluid(st);
                     if let Some(top) = top_material(s, sf, bc, c, wx, y - 1, wz, under_fluid) {
                         c.set(m, w, wx, y - 1, wz, top);
+                        if w.blocks.has_fluid(top) {
+                            c.mark(wx, y - 1, wz);
+                        }
                     }
                 }
             }
@@ -732,6 +757,9 @@ fn build_surface(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, c: &mut Chunk) -> 
                     if y >= min_y && y <= max_y {
                         if let Some(st) = cx.apply(&m.rule) {
                             c.set(m, w, bx, y, bz, st);
+                            if w.blocks.has_fluid(st) {
+                                c.mark(bx, y, bz);
+                            }
                         }
                     }
                 }
@@ -848,13 +876,14 @@ pub struct Chunks<'w> {
     bc: BiomeCtx,
     cache: HashMap<(i32, i32), Arc<Chunk>>,
     surface_cache: HashMap<(i32, i32), Arc<Chunk>>,
+    full_cache: HashMap<(i32, i32), Arc<Chunk>>,
 }
 
 impl<'w> Chunks<'w> {
     pub fn new(w: &'w World, seed: i64) -> Self {
         let mut s = Seeded::new(w, seed);
         s.prepare_terrain();
-        Chunks { s, sf: None, bc: BiomeCtx::cached(), cache: HashMap::new(), surface_cache: HashMap::new() }
+        Chunks { s, sf: None, bc: BiomeCtx::cached(), cache: HashMap::new(), surface_cache: HashMap::new(), full_cache: HashMap::new() }
     }
 
     pub fn terrain(&mut self, cx: i32, cz: i32) -> Result<Arc<Chunk>, String> {
@@ -873,6 +902,28 @@ impl<'w> Chunks<'w> {
         }
         let c = Arc::new(self.generate(cx, cz, false)?);
         self.surface_cache.insert((cx, cz), c.clone());
+        Ok(c)
+    }
+
+    /// The FULL chunk: the TERRAIN chunk after postProcessGeneration (the one fluid tick), with
+    /// its neighbours' TERRAIN chunks around it.
+    // ponytail: neighbours are not post-processed first; the game finishes chunks in no fixed order,
+    // so fluid one neighbour spreads across the border is missing
+    pub fn full(&mut self, cx: i32, cz: i32) -> Result<Arc<Chunk>, String> {
+        if let Some(c) = self.full_cache.get(&(cx, cz)) {
+            return Ok(c.clone());
+        }
+        let mut around = vec![];
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                around.push((*self.terrain(cx + dx, cz + dz)?).clone());
+            }
+        }
+        let w = self.s.w;
+        let mut r = crate::fluid::Region::new(w, w.materials()?, cx, cz, around);
+        r.post_process();
+        let c = Arc::new(r.chunks.swap_remove(4));
+        self.full_cache.insert((cx, cz), c.clone());
         Ok(c)
     }
 
