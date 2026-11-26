@@ -68,8 +68,15 @@ from scratch; the result goes to the log).
 
 ## Map (right)
 
-Engine-rendered biome map of one seed. Hover for coordinates, biome and nearby structures in the
-status bar. Drag to pan, wheel to zoom (1 to 256 blocks per pixel). `y` picks the biome layer
+Engine-rendered biome map of one seed. Hover for coordinates, biome (the block-level biome F3
+shows) and nearby structures in the status bar. The gold diamond is the world spawn.
+
+The layer box switches to **surface blocks** (the top block of the generated chunks: grass, sand,
+snow, terracotta, water...) or **blocks at y** (the blocks at the `y` level; ore veins, their raw
+blocks and filler stand out, everything else is dimmed). Block layers generate every chunk on
+screen, so they need 4 blocks per pixel or less. Double-click the map to open the **chunk
+inspector** for that chunk: the chunk from above at a chosen y and from the side at a chosen z,
+hover for each block. Drag to pan, wheel to zoom (1 to 256 blocks per pixel). `y` picks the biome layer
 (cave biomes need low y). **height shading** shades by exact surface height (slower).
 **structures** shows markers for the sets ticked under **sets** (mineshafts and buried treasure are
 off by default because they appear in nearly every chunk); `?` marks approximate positions.

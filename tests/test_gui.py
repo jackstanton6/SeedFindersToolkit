@@ -100,6 +100,12 @@ def main():
     w.job.stop()
     while w.busy():
         app.processEvents()
+
+    # chunk inspector: the top-down layer and the slice show the chunk's blocks
+    from sft.gui.chunkview import ChunkView
+    v = ChunkView(w, w.world, 12345, 0, 0, -64)
+    assert v.block(3, -64, 5) == "minecraft:bedrock" and v.top.image is not None and v.side.image is not None
+    assert "bedrock" in v.top.at(3, 5)
     print("ok")
 
 

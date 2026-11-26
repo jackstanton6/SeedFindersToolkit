@@ -208,6 +208,7 @@ class Main(QMainWindow):
         # map dock
         self.map = MapView()
         self.map.hovered.connect(lambda s: self.statusBar().showMessage(s))
+        self.map.chunk_opened.connect(self.inspect_chunk)
         self.map_seed = QLineEdit("0")
         self.map_seed.setFont(MONO)
         self.map_x = QSpinBox(minimum=-30_000_000, maximum=30_000_000)
@@ -217,13 +218,17 @@ class Main(QMainWindow):
         self.map_scale.addItems([str(s) for s in (1, 2, 4, 8, 16, 32, 64, 128, 256)])
         self.map_scale.setCurrentText("8")
         self.map_height = QCheckBox("height shading")
+        self.map_layer = QComboBox(toolTip="biomes, the top block of generated chunks, or the blocks at y (ore veins stand out); "
+                                           "block layers need 4 blocks/px or less. Double-click the map to inspect a chunk.")
+        self.map_layer.addItems(["biomes", "surface blocks", "blocks at y"])
+        self.map_layer.currentTextChanged.connect(self._map_from_controls)
         self.map_structs = QCheckBox("structures", checked=True)
         self.map_sets = QToolButton(text="sets", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
         self.map_sets.setMenu(QMenu(self.map_sets))
         self.map_attempts = QComboBox(toolTip="overlay every placement attempt of a set (x = failed start)")
         self.map_attempts.currentTextChanged.connect(self._map_from_controls)
         row1, row2 = QHBoxLayout(), QHBoxLayout()
-        for w in (QLabel("seed"), self.map_seed, QLabel("x"), self.map_x, QLabel("z"), self.map_z):
+        for w in (QLabel("seed"), self.map_seed, QLabel("x"), self.map_x, QLabel("z"), self.map_z, self.map_layer):
             row1.addWidget(w)
         for w in (QLabel("y"), self.map_y, QLabel("blocks/px"), self.map_scale, self.map_height, self.map_structs,
                   self.map_sets, QLabel("attempts"), self.map_attempts, QPushButton("render", clicked=self._map_from_controls)):
@@ -754,6 +759,13 @@ class Main(QMainWindow):
         self.map.structure_filter = [a.text() for a in self.map_sets.menu().actions() if a.isChecked()]
         self.map.request()
 
+    def inspect_chunk(self, cx: int, cz: int):
+        from sft.gui.chunkview import ChunkView
+        if self.world is None:
+            return
+        v = ChunkView(self, self.world, self.map.seed, cx, cz, self.map_y.value())
+        v.show()
+
     def _map_from_controls(self):
         try:
             seed = int(self.map_seed.text())
@@ -763,6 +775,7 @@ class Main(QMainWindow):
         self.map.y = self.map_y.value()
         self.map.scale = int(self.map_scale.currentText())
         self.map.show_height = self.map_height.isChecked()
+        self.map.layer = self.map_layer.currentText()
         self.map.show_structures = self.map_structs.isChecked()
         self.map.attempts_set = self.map_attempts.currentText()
         if seed != self.map.seed:

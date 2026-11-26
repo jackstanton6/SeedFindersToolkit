@@ -86,6 +86,39 @@ mod py {
             })
         }
 
+        /// Blocks on the biome_map grid from generated chunks: the top block (y None) or the block
+        /// at y. Returns (palette, index per cell).
+        #[allow(clippy::too_many_arguments)]
+        fn block_map(&self, py: Python<'_>, seed: i64, x0: i32, z0: i32, w: i32, h: i32, scale: i32, y: Option<i32>) -> PyResult<(Vec<String>, Vec<u16>)> {
+            let world = self.w.clone();
+            py.detach(move || {
+                let cells: Vec<(i32, i32)> = (0..h).flat_map(|j| (0..w).map(move |i| (x0 + i * scale, z0 + j * scale))).collect();
+                let mut chunks: Vec<(i32, i32)> = cells.iter().map(|&(x, z)| (x >> 4, z >> 4)).collect();
+                chunks.sort_unstable();
+                chunks.dedup();
+                let generated: std::collections::HashMap<(i32, i32), std::sync::Arc<crate::chunk::Chunk>> = chunks
+                    .par_iter()
+                    .map_init(|| crate::chunk::Chunks::new(&world, seed), |ch, &c| ch.terrain(c.0, c.1).map(|g| (c, g)))
+                    .collect::<Result<_, String>>()
+                    .map_err(PyValueError::new_err)?;
+                let mut ids = std::collections::HashMap::new();
+                let mut palette = vec![];
+                let out = cells
+                    .iter()
+                    .map(|&(x, z)| {
+                        let c = &generated[&(x >> 4, z >> 4)];
+                        let yy = y.unwrap_or_else(|| c.height(crate::chunk::WORLD_SURFACE_WG, x, z));
+                        let s = c.get(&world, x, yy, z);
+                        *ids.entry(s).or_insert_with(|| {
+                            palette.push(world.blocks.to_string(s));
+                            (palette.len() - 1) as u16
+                        })
+                    })
+                    .collect();
+                Ok((palette, out))
+            })
+        }
+
         /// Surface heights (WORLD_SURFACE_WG) on the same grid layout as biome_map.
         fn height_map(&self, py: Python<'_>, seed: i64, x0: i32, z0: i32, w: i32, h: i32, scale: i32) -> Vec<i32> {
             let world = self.w.clone();

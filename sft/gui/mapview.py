@@ -39,6 +39,35 @@ DEFAULT_SETS = [
 MAX_MARKER_RADIUS = 12_000
 
 
+MAX_BLOCK_SCALE = 4  # block layers generate every chunk on screen
+# Map item-like colours for common generated blocks; ore veins stand out on the "blocks at y" layer.
+BLOCK_COLORS = {
+    "air": 0x101014, "cave_air": 0x101014, "water": 0x3F76E4, "lava": 0xE0621A, "stone": 0x7D7D7D, "deepslate": 0x4D4D50,
+    "bedrock": 0x2A2A2A, "grass_block": 0x5E9D34, "dirt": 0x86603D, "coarse_dirt": 0x77553B, "podzol": 0x6A4A2A,
+    "mycelium": 0x6F6265, "mud": 0x3C3837, "sand": 0xDBD3A0, "sandstone": 0xD8CB9B, "red_sand": 0xBE6621,
+    "red_sandstone": 0xB5621F, "gravel": 0x847F7F, "clay": 0xA0A6B3, "snow_block": 0xF8FDFD, "powder_snow": 0xF0F6F6,
+    "ice": 0x91B7FD, "packed_ice": 0x8DB4FA, "blue_ice": 0x74A8FD, "calcite": 0xDFE0DC, "tuff": 0x6C6D66,
+    "granite": 0x95675A, "diorite": 0xBCBCBC, "andesite": 0x888889, "terracotta": 0x985E43, "dripstone_block": 0x866B5C,
+    "moss_block": 0x596E2D, "cinnabar": 0x8C2A24, "sulfur": 0xC9B83D,
+    "raw_iron_block": 0xF0B898, "deepslate_iron_ore": 0xD08A6A, "iron_ore": 0xD08A6A,
+    "raw_copper_block": 0xE07F4F, "copper_ore": 0xC87452,
+}
+VEIN_BLOCKS = {"raw_iron_block", "deepslate_iron_ore", "iron_ore", "raw_copper_block", "copper_ore", "tuff", "granite"}
+
+
+def block_color(state: str, veins: bool) -> int:
+    name = state.split("[")[0].removeprefix("minecraft:")
+    if name.endswith("_terracotta"):
+        colour = {"white": 0xD1B2A1, "orange": 0xA05325, "yellow": 0xBA8523, "red": 0x8E3C2E, "brown": 0x4D3323,
+                  "light_gray": 0x876B62}.get(name.removesuffix("_terracotta"), 0x985E43)
+    else:
+        colour = BLOCK_COLORS.get(name, zlib.crc32(name.encode()) & 0xFFFFFF)
+    if veins and name not in VEIN_BLOCKS and name not in ("air", "cave_air", "water", "lava"):
+        r, g, b = colour >> 16, colour >> 8 & 255, colour & 255  # everything else dimmed
+        colour = (r // 3) << 16 | (g // 3) << 8 | b // 3
+    return colour
+
+
 def biome_color(name: str) -> int:
     short = name.split(":")[-1]
     return BIOME_COLORS.get(short, zlib.crc32(short.encode()) & 0xFFFFFF)
@@ -48,6 +77,7 @@ class MapView(QWidget):
     """Owns view state (seed, centre, scale, y) and re-renders through the engine on change."""
 
     hovered = Signal(str)
+    chunk_opened = Signal(int, int)  # double click: (chunk x, chunk z)
     _rendered = Signal(int, object)  # (generation, result) from the render thread
 
     def __init__(self, parent=None):
@@ -57,6 +87,10 @@ class MapView(QWidget):
         self.world = None
         self.seed, self.cx, self.cz, self.scale, self.y = 0, 0, 0, 8, 64
         self.show_height, self.show_structures = False, True
+        self.layer = "biomes"  # or "surface blocks", "blocks at y"
+        self.block_names: list[str] = []
+        self.spawn: tuple[int, int] | None = None
+        self.note = ""
         self.structure_filter: list[str] = list(DEFAULT_SETS)
         self.image: QImage | None = None
         self.ids: list[int] = []
@@ -94,12 +128,22 @@ class MapView(QWidget):
         w, h = max(self.width() // 2, 16), max(self.height() // 2, 16)  # 2x2 screen pixels per cell
         x0, z0 = self.cx - w * scale // 2, self.cz - h * scale // 2
         cx, cz, heights, structs, sets, att = self.cx, self.cz, self.show_height, self.show_structures, list(self.structure_filter), self.attempts_set
+        layer = self.layer
 
         def work():
             try:
+                note, block_names = "", []
                 palette = [biome_color(n).to_bytes(3, "big") for n in self.names]
                 ids = world.biome_map(seed, x0, z0, w, h, scale, y)
                 rgb = bytearray(b"".join(palette[i] for i in ids))
+                if layer != "biomes":
+                    if scale > MAX_BLOCK_SCALE:
+                        note = f"zoom in to {MAX_BLOCK_SCALE} blocks/px or less for block layers (every chunk is generated)"
+                    else:
+                        block_names, bids = world.block_map(seed, x0, z0, w, h, scale, y if layer == "blocks at y" else None)
+                        colours = [block_color(n, layer == "blocks at y").to_bytes(3, "big") for n in block_names]
+                        rgb = bytearray(b"".join(colours[i] for i in bids))
+                        ids = bids
                 if heights:
                     for k, hv in enumerate(world.height_map(seed, x0, z0, w, h, scale)):
                         f = max(0.35, min(1.4, 0.55 + (hv - 40) / 200))  # brightness by surface height
@@ -108,7 +152,8 @@ class MapView(QWidget):
                 radius = int(max(w, h) * scale * 0.75)
                 markers = world.structures_near(seed, cx, cz, radius, sets) if structs and sets and radius <= MAX_MARKER_RADIUS else []
                 attempts = world.attempts(seed, att, cx, cz, radius) if att and radius <= MAX_MARKER_RADIUS else []
-                self._rendered.emit(gen, (bytes(rgb), ids, (x0, z0, w, h), markers, attempts))
+                spawn = world.spawn(seed)
+                self._rendered.emit(gen, (bytes(rgb), ids, (x0, z0, w, h), markers, attempts, spawn, block_names, note))
             except Exception as e:  # e.g. an unknown set name; keep the old image
                 self._rendered.emit(gen, e)
         threading.Thread(target=work, daemon=True).start()
@@ -116,7 +161,7 @@ class MapView(QWidget):
     def _apply(self, gen: int, res):
         if gen != self._gen or isinstance(res, Exception):
             return
-        self._rgb, self.ids, self.grid, self.markers, self.attempts = res  # QImage does not copy; keep the buffer alive
+        self._rgb, self.ids, self.grid, self.markers, self.attempts, self.spawn, self.block_names, self.note = res  # QImage does not copy; keep the buffer alive
         _, _, w, h = self.grid
         self.image = QImage(self._rgb, w, h, 3 * w, QImage.Format.Format_RGB888)
         self.update()
@@ -168,10 +213,23 @@ class MapView(QWidget):
             p.drawEllipse(q, 9, 9)
             if label:
                 p.drawText(q.x() + 11, q.y() + 4, label)
+        if self.spawn:  # world spawn: a gold diamond
+            q = self.to_screen(*self.spawn)
+            p.setPen(QPen(QColor(0, 0, 0), 1))
+            p.setBrush(QColor(255, 200, 40))
+            p.drawPolygon([QPoint(q.x(), q.y() - 8), QPoint(q.x() + 8, q.y()), QPoint(q.x(), q.y() + 8), QPoint(q.x() - 8, q.y())])
+        if self.note:
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(self.rect().adjusted(8, 8, -8, -8), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, self.note)
         q = self.to_screen(0, 0)  # world origin crosshair
         p.setPen(QPen(QColor(255, 255, 255, 160), 1))
         p.drawLine(q.x() - 8, q.y(), q.x() + 8, q.y())
         p.drawLine(q.x(), q.y() - 8, q.x(), q.y() + 8)
+
+    def mouseDoubleClickEvent(self, e):
+        if self.image is not None:
+            x, z = self.to_world(e.position().toPoint())
+            self.chunk_opened.emit(x >> 4, z >> 4)
 
     def mousePressEvent(self, e):
         self._drag = e.position().toPoint()
@@ -194,6 +252,10 @@ class MapView(QWidget):
             i, j = pos.x() * w // max(self.width(), 1), pos.y() * h // max(self.height(), 1)
             # the block-level (F3) biome at the hovered block, not the map cell's
             biome = self.names[self.world.block_biome(self.seed, x, self.y, z)].split(":")[-1]
+            if self.block_names and 0 <= i < w and 0 <= j < h:
+                biome += "  " + self.block_names[self.ids[j * w + i]].removeprefix("minecraft:")
+            if self.spawn and (self.to_screen(*self.spawn) - pos).manhattanLength() < 12:
+                biome += f"  |  world spawn ({self.spawn[0]}, {self.spawn[1]})"
             near = [m for m in self.markers if (self.to_screen(m[1], m[3]) - pos).manhattanLength() < 12]
             extra = "  |  " + ", ".join(f"{m[0].split(':')[-1]} ({m[1]}, {m[2]}, {m[3]})" for m in near) if near else ""
             self.hovered.emit(f"x {x}  z {z}  y {self.y}  {biome}{extra}")

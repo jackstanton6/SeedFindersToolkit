@@ -382,8 +382,9 @@ region files compared block by block).
   two Xoroshiro128++ outputs to states twice (each step is 128 bits from two 64-bit outputs) and
   mixStafford13 (a bijection) back to the seed. Steps 1 and 3 are straightforward; step 2 is open.
   Not planned unless someone asks: cracking with structures + bedrock already works.
-- [ ] 11. GUI: spawn marker, surface block map layer, ore vein overlay (chosen y), chunk inspector
-  (vertical slice / y-level view).
+- [x] 11. GUI: spawn marker, surface block map layer, ore vein overlay (chosen y), chunk inspector
+  (vertical slice / y-level view). Map layer box (biomes / surface blocks / blocks at y; block
+  layers at <= 4 blocks/px), gold spawn diamond, double-click opens `chunkview.ChunkView`.
 - [x] 12. API: `World.spawn`, `World.block`, `World.chunk`; CLI `spawn SEED` and `chunk SEED X Z`;
   export a generated area as `.mca` (+ minimal level.dat) and Sponge `.schem`. `World.chunks` (a
   range, in parallel), `sft.worldfile` (stdlib NBT writer, 26.x palettes and world_gen_settings.dat),
