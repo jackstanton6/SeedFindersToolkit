@@ -21,6 +21,8 @@ pub struct Blocks {
     tags: HashMap<String, Vec<String>>,
     /// reports/block_props.json per state: flags and fluid (type, amount, source, falling).
     props_of: Vec<(u64, u8, u8, bool, bool)>,
+    /// Per block: its class and superclasses ("SaplingBlock>VegetationBlock>Block").
+    classes: Vec<String>,
     pub air: State,
     pub cave_air: State,
     pub void_air: State,
@@ -35,7 +37,7 @@ impl Blocks {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| format!("{}: {e} (run `python -m sft data <version>` again)", path.display()))?)
             .map_err(|e| e.to_string())?;
         let mut b = Blocks {
-            names: vec![], first: vec![], props: vec![], default: vec![], by_name: HashMap::new(), block_of: vec![], tags: HashMap::new(), props_of: vec![],
+            names: vec![], first: vec![], props: vec![], default: vec![], by_name: HashMap::new(), block_of: vec![], tags: HashMap::new(), props_of: vec![], classes: vec![],
             air: 0, cave_air: 0, void_air: 0, stone: 0, water: 0, lava: 0,
         };
         let mut blocks: Vec<(&String, &Value)> = v.as_object().ok_or("blocks.json")?.iter().collect();
@@ -78,6 +80,10 @@ impl Blocks {
                 .map(|e| (e[0].as_u64().unwrap_or(0), e[1].as_u64().unwrap_or(0) as u8, e[2].as_u64().unwrap_or(0) as u8, e[3].as_u64() == Some(1), e[4].as_u64() == Some(1)))
                 .collect();
         }
+        if let Ok(text) = std::fs::read_to_string(data.join("reports/block_classes.json")) {
+            let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            b.classes = b.names.iter().map(|n| v[n].as_str().unwrap_or("Block").to_string()).collect();
+        }
         let get = |b: &Blocks, n: &str| b.state(n).ok_or(format!("blocks.json has no {n}"));
         b.air = get(&b, "minecraft:air")?;
         b.cave_air = get(&b, "minecraft:cave_air")?;
@@ -95,9 +101,10 @@ impl Blocks {
 
     /// A state written as JSON: a name, or {"Name": ..., "Properties": {...}} (BlockState.CODEC).
     pub fn parse(&self, v: &Value) -> Result<State, String> {
-        let name = v.as_str().or_else(|| v["Name"].as_str()).ok_or(format!("not a block state: {v}"))?;
+        // BlockState.CODEC: a name, {"Name", "Properties"}, or (26.x) {"id", "properties"}
+        let name = v.as_str().or_else(|| v["Name"].as_str()).or_else(|| v["id"].as_str()).ok_or(format!("not a block state: {v}"))?;
         let mut s = self.state(name).ok_or(format!("unknown block {name}"))?;
-        if let Some(p) = v["Properties"].as_object() {
+        if let Some(p) = v["Properties"].as_object().or_else(|| v["properties"].as_object()) {
             for (k, val) in p {
                 s = self.with(s, k, val.as_str().unwrap_or_default()).ok_or(format!("{name} has no {k}={val}"))?;
             }
@@ -168,6 +175,16 @@ impl Blocks {
 
     fn flags(&self, s: State) -> u64 {
         self.props_of.get(s as usize).map_or(0, |p| p.0)
+    }
+
+    /// Whether the state's block is of this Java class or a subclass of it.
+    pub fn is_class(&self, s: State, class: &str) -> bool {
+        self.classes.get(self.block(s)).is_some_and(|c| c.split('>').any(|x| x == class))
+    }
+
+    /// The block's own class name.
+    pub fn class(&self, s: State) -> &str {
+        self.classes.get(self.block(s)).map_or("Block", |c| c.split('>').next().unwrap_or("Block"))
     }
 
     /// Whether reports/block_props.json was loaded.

@@ -251,7 +251,7 @@ pub struct Materials {
     // Biome's static temperature noises
     temperature_noise: Simplex,
     frozen_noise: SimplexStack,
-    info_noise: Simplex,
+    pub info_noise: Simplex,
 }
 
 struct Parser<'a> {
@@ -477,7 +477,7 @@ impl Surface {
 }
 
 /// Math.round(float)
-fn java_round_f(v: f32) -> i32 {
+pub fn java_round_f(v: f32) -> i32 {
     (v + 0.5).floor() as i32
 }
 
@@ -996,13 +996,25 @@ impl<'w> Chunks<'w> {
         if let Some(c) = self.full_cache.get(&(cx, cz)) {
             return Ok(c.clone());
         }
-        let mut around = vec![];
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                around.push((*self.terrain(cx + dx, cz + dz)?).clone());
+        let w = self.s.w;
+        // FEATURES: the 3x3 chunks around this one are decorated (each writes one chunk around
+        // it), so the 5x5 TERRAIN chunks are needed
+        // ponytail: the game decorates neighbours in no fixed order; here rows of x, z ascending
+        let mut terrain = HashMap::new();
+        for dz in -2..=2 {
+            for dx in -2..=2 {
+                terrain.insert((cx + dx, cz + dz), (*self.terrain(cx + dx, cz + dz)?).clone());
             }
         }
-        let w = self.s.w;
+        let seed = self.s.seed;
+        let mut level = crate::feature::Level { w, m: w.materials()?, s: &self.s, chunks: terrain, centre: (cx, cz), bc: BiomeCtx::cached() };
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                level.centre = (cx + dx, cz + dz);
+                crate::feature::decorate(&mut level, seed)?;
+            }
+        }
+        let around: Vec<Chunk> = (-1..=1).flat_map(|dz| (-1..=1).map(move |dx| (dx, dz))).map(|(dx, dz)| level.chunks.remove(&(cx + dx, cz + dz)).unwrap()).collect();
         let mut r = crate::fluid::Region::new(w, w.materials()?, cx, cz, around);
         r.post_process();
         let c = Arc::new(r.chunks.swap_remove(4));

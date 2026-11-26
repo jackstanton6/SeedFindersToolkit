@@ -13,6 +13,16 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 /// Per block state (by id) the predicates worldgen code asks for, from the game's own classes:
 /// [flags, fluid (0 none, 1 water, 2 lava), fluid amount, source, falling]. Run by `python -m sft data`.
 public class BlockProps {
+    /// "SaplingBlock>VegetationBlock>Block": the class and its superclasses up to Block.
+    static String chain(Class<?> c) {
+        StringBuilder sb = new StringBuilder(c.getSimpleName());
+        while (c != Block.class && c.getSuperclass() != null) {
+            c = c.getSuperclass();
+            sb.append('>').append(c.getSimpleName());
+        }
+        return sb.toString();
+    }
+
     public static void main(String[] args) throws Exception {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
@@ -52,7 +62,7 @@ public class BlockProps {
         boolean first = true;
         for (Block b : net.minecraft.core.registries.BuiltInRegistries.BLOCK) {
             cl.append(first ? "" : ",").append('"').append(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b)).append("\":\"")
-                .append(b.getClass().getSimpleName()).append('"');
+                .append(chain(b.getClass())).append('"');
             first = false;
         }
         try (FileWriter w = new FileWriter(args[1])) {

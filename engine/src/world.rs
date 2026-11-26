@@ -57,6 +57,7 @@ pub struct World {
     /// The overworld material rule tree (seed-independent), parsed on first use.
     pub materials: std::sync::OnceLock<Result<crate::chunk::Materials, String>>,
     pub carvers: std::sync::OnceLock<Result<crate::carver::Carvers, String>>,
+    pub deco: std::sync::OnceLock<Result<crate::feature::Deco, String>>,
     pub material_rule: Value,
     pub biomes: Biomes,
     pub climate: Climate,
@@ -143,6 +144,7 @@ impl World {
             blocks: crate::blocks::Blocks::load(dir)?,
             materials: std::sync::OnceLock::new(),
             carvers: std::sync::OnceLock::new(),
+            deco: std::sync::OnceLock::new(),
             material_rule: s["material_rule"].clone(),
             aquifer_dfs,
             biomes,

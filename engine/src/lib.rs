@@ -7,6 +7,7 @@ pub mod biome;
 pub mod blocks;
 pub mod carver;
 pub mod chunk;
+pub mod feature;
 pub mod fluid;
 pub mod crack;
 pub mod density;

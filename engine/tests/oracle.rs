@@ -159,6 +159,13 @@ fn deco_terrain_matches() {
     chunks_match("deco-terrain", true);
 }
 
+/// Server worlds with structures off (tests/decoration_oracle.py features ...).
+#[test]
+#[ignore]
+fn deco_features_matches() {
+    chunks_match("deco-features", true);
+}
+
 fn chunks_match(mode: &str, carvers: bool) {
     let full = mode.starts_with("deco-");
     use sft_engine::chunk::{Chunks, OCEAN_FLOOR_WG, WORLD_SURFACE_WG};
@@ -208,7 +215,7 @@ fn chunks_match(mode: &str, carvers: bool) {
     }
     let mut v: Vec<_> = kinds.into_iter().collect();
     v.sort_by_key(|x| std::cmp::Reverse(x.1));
-    for ((want, got, wh), n) in v.iter().take(40) {
+    for ((want, got, wh), n) in v.iter().take(60) {
         eprintln!("{n:8} want {want} got {got} ({wh})");
     }
     assert_eq!((bad, bad_h), (0, 0), "{bad}/{total} blocks, {bad_h} heightmap columns differ");

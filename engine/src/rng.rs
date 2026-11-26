@@ -237,14 +237,32 @@ impl Rng for JavaRandom {
 /// WorldgenRandom(XoroshiroRandomSource): the 26.x decoration random (features, structure
 /// postProcess). Java-random methods (BitRandomSource) over `next(bits)` = top bits of nextLong.
 #[derive(Clone, Copy, Debug)]
-pub struct WorldgenXoro(Xoroshiro);
+pub struct WorldgenXoro(Xoroshiro, Option<f64>);
 
 impl WorldgenXoro {
     pub fn new(seed: i64) -> Self {
-        WorldgenXoro(Xoroshiro::new(seed))
+        WorldgenXoro(Xoroshiro::new(seed), None)
     }
+    /// WorldgenRandom.setSeed reseeds the wrapped source only: a cached gaussian survives it.
     pub fn set_seed(&mut self, seed: i64) {
         self.0 = Xoroshiro::new(seed);
+    }
+    /// nextGaussian: the outer LegacyRandomSource's MarsagliaPolarGaussian over this random.
+    pub fn next_gaussian(&mut self) -> f64 {
+        if let Some(g) = self.1.take() {
+            return g;
+        }
+        loop {
+            let x = 2.0 * self.next_double() - 1.0;
+            let y = 2.0 * self.next_double() - 1.0;
+            let r2 = x * x + y * y;
+            if r2 >= 1.0 || r2 == 0.0 {
+                continue;
+            }
+            let m = (-2.0 * r2.ln() / r2).sqrt();
+            self.1 = Some(y * m);
+            return x * m;
+        }
     }
     fn next(&mut self, bits: u32) -> i32 {
         self.0.next_bits(bits) as i32
