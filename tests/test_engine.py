@@ -214,6 +214,20 @@ def test_point_biome_checks_are_block_level():
     assert check(f"biome('{cell}', at=({x}, 0), exact=False)") is not None
 
 
+def test_spawn_anchors_conditions():
+    x, z = w.spawn(SEED)
+    d = (x * x + z * z) ** 0.5
+    res = check(f"spawn_distance() >= {d - 1} and spawn_distance() <= {d + 1}")
+    assert res is not None and {"type": "spawn", "x": x, "z": z} in res, res
+    assert check(f"spawn_distance() > {d + 1}") is None
+    # at='spawn' is the same as at=(x, z) with the spawn's coordinates
+    names = w.biomes()
+    here = names[w.block_biome(SEED, x, 64, z)]
+    assert check(f"biome('{here}', at='spawn')") is not None
+    assert check(f"village(within=500, at='spawn')") == check(f"village(within=500, at=({x}, {z}))")
+    assert "spawn" in refused("biome('plains', at='spwn')")
+
+
 def test_cli_edge_cases():
     import subprocess
     import tempfile
@@ -238,5 +252,6 @@ if __name__ == "__main__":
     test_two_islands_keep_their_own_details()
     test_gpu_biome_checks_find_the_same_seeds()
     test_point_biome_checks_are_block_level()
+    test_spawn_anchors_conditions()
     test_cli_edge_cases()
     print("ok")

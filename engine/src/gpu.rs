@@ -7,7 +7,7 @@
 
 use crate::density::{CSpline, S};
 use crate::noise::{NoiseStack, NormalNoise};
-use crate::query::{Cond, Metric, Sel};
+use crate::query::{Cond, Metric, Sel, SPAWN_REACH};
 use crate::world::World;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
@@ -115,6 +115,7 @@ pub struct Gpu {
     filter_bio: *mut c_void,
     crack: *mut c_void,
     biomes: *mut c_void,
+    spawns: *mut c_void,
     prog: Ptr,
     clim: Ptr,
     /// Whether the per-thread stack was raised for climate programs (a context-wide setting).
@@ -174,7 +175,7 @@ impl Gpu {
                 let mut f = std::ptr::null_mut();
                 api.ok((api.cuModuleGetFunction)(&mut f, module, name.as_ptr()), &format!("{} kernel", name.to_string_lossy())).map(|_| f)
             };
-            let (filter, filter_bio, crack, biomes) = (kernel(c"filter")?, kernel(c"filter_bio")?, kernel(c"crack")?, kernel(c"biomes")?);
+            let (filter, filter_bio, crack, biomes, spawns) = (kernel(c"filter")?, kernel(c"filter_bio")?, kernel(c"crack")?, kernel(c"biomes")?, kernel(c"spawns")?);
             let (mut prog, mut clim, mut size) = (0, 0, 0);
             api.ok((api.cuModuleGetGlobal)(&mut prog, &mut size, module, c"PROG".as_ptr()), "PROG")?;
             api.ok((api.cuModuleGetGlobal)(&mut clim, &mut size, module, c"CLIM".as_ptr()), "CLIM")?;
@@ -183,7 +184,7 @@ impl Gpu {
             }
             let mut count = 0;
             api.ok((api.cuMemAlloc)(&mut count, 4), "cuMemAlloc")?;
-            Ok(Gpu { api, ctx, filter, filter_bio, crack, biomes, prog, clim, deep_stack: Mutex::new(false), bufs: Mutex::new(Bufs { out: 0, out_bytes: 0, count, out2: 0, out2_bytes: 0 }), name })
+            Ok(Gpu { api, ctx, filter, filter_bio, crack, biomes, spawns, prog, clim, deep_stack: Mutex::new(false), bufs: Mutex::new(Bufs { out: 0, out_bytes: 0, count, out2: 0, out2_bytes: 0 }), name })
         }
     }
 
@@ -244,6 +245,9 @@ impl Gpu {
             d.c.kids = d.upload(&p.kids)?;
             d.c.space = d.upload(&p.spaces)?;
             d.c.leaf_biome = d.upload(&p.leaf_biome)?;
+            d.c.spawn_off = d.upload(&p.spawn_off)?;
+            d.c.nspawn = p.nspawn;
+            d.c.spawn_t = d.upload(&p.spawn_t)?;
         }
         Ok(d)
     }
@@ -286,6 +290,31 @@ impl Gpu {
             })();
             (a.cuMemFree)(sd);
             (a.cuMemFree)(pd);
+            res
+        }
+    }
+
+    /// NoiseSpawnFinder's block (x, z) for each seed. For parity tests.
+    pub fn spawns(&self, clim: &ClimDev, seeds: &[i64]) -> Result<Vec<(i32, i32)>, String> {
+        let mut b = self.bufs.lock().unwrap();
+        let n = seeds.len();
+        // SAFETY: buffers sized for n entries; argument pointers live until the synchronous launch returns.
+        unsafe {
+            self.prepare(&mut b, &[0], n * 8)?;
+            self.use_climate(clim)?;
+            let a = &self.api;
+            let mut sd = 0;
+            a.ok((a.cuMemAlloc)(&mut sd, n.max(1) * 8), "cuMemAlloc")?;
+            let res = (|| {
+                a.ok((a.cuMemcpyHtoD)(sd, seeds.as_ptr() as *const c_void, n * 8), "seeds")?;
+                let (mut s, mut out) = (sd, b.out);
+                let mut args: [*mut c_void; 2] = [&mut s as *mut _ as _, &mut out as *mut _ as _];
+                self.launch_blocks(&b, self.spawns, n as u64, BIO_THREADS, &mut args)?;
+                let mut v = vec![0i32; 2 * n];
+                a.ok((a.cuMemcpyDtoH)(v.as_mut_ptr() as *mut c_void, b.out, n * 8), "results")?;
+                Ok(v.chunks(2).map(|p| (p[0], p[1])).collect())
+            })();
+            (a.cuMemFree)(sd);
             res
         }
     }
@@ -408,6 +437,9 @@ struct ClimC {
     kids: Ptr,
     space: Ptr,
     leaf_biome: Ptr,
+    spawn_off: Ptr,
+    nspawn: [i32; 2],
+    spawn_t: Ptr,
 }
 
 /// A climate program on the device (freed on drop).
@@ -478,6 +510,11 @@ pub struct ClimateProgram {
     pub kids: Vec<i32>,
     pub spaces: Vec<i64>,
     pub leaf_biome: Vec<i32>,
+    /// NoiseSpawnFinder: ring offsets (x, z pairs, both rings), their counts, and the spawn target
+    /// ([points, per point: params, (climate root, min, max)...]).
+    pub spawn_off: Vec<i32>,
+    pub nspawn: [i32; 2],
+    pub spawn_t: Vec<i64>,
 }
 
 struct Enc<'a> {
@@ -778,6 +815,14 @@ impl ClimateProgram {
         e.p.kids = kids;
         e.p.spaces = spaces;
         e.p.leaf_biome = biomes.into_iter().map(i32::from).collect();
+        let rings = crate::world::spawn_rings();
+        e.p.spawn_off = rings.iter().flatten().flat_map(|&(x, z)| [x, z]).collect();
+        e.p.nspawn = [rings[0].len() as i32, rings[1].len() as i32];
+        e.p.spawn_t = vec![w.spawn_target.len() as i64];
+        for point in &w.spawn_target {
+            e.p.spawn_t.push(point.len() as i64);
+            e.p.spawn_t.extend(point.iter().flat_map(|&(i, lo, hi)| [i as i64, lo, hi]));
+        }
         Ok(e.p)
     }
 }
@@ -823,6 +868,15 @@ fn clauses(w: &World, c: &Cond, full: bool) -> Vec<Vec<Atom>> {
         Cond::And(v) => v.iter().flat_map(|c| clauses(w, c, full)).collect(),
         // (a1 and a2) or b implies a1 or b: one clause per branch, if every branch has one
         Cond::Or(v) => v.iter().map(|c| clauses(w, c, full).into_iter().next()).collect::<Option<Vec<_>>>().map(|f| vec![f.concat()]).unwrap_or_default(),
+        Cond::Metric { m: Metric::Spawn(m), min, max } if full => spawn_clauses(w, m, *min, *max),
+        Cond::Metric { m: Metric::SpawnDistance, min, max } if full => {
+            let mut a = [0; ATOM];
+            a[0] = 5;
+            a[1..3].copy_from_slice(&f64_ints(*min));
+            a[3..5].copy_from_slice(&f64_ints(*max));
+            a[5] = SPAWN_SLACK;
+            vec![vec![a]]
+        }
         // block-level biomes stay on the CPU (no zoom on the device yet)
         Cond::Metric { m: Metric::Biome { biomes, at, within, y, step, exact: false }, min, max } if full && *step > 0 && *within >= 0 => {
             let mut a = [0; ATOM];
@@ -863,9 +917,53 @@ fn clauses(w: &World, c: &Cond, full: bool) -> Vec<Vec<Atom>> {
     }
 }
 
+/// How far the exact spawn block can be from the spawn chunk's centre (setInitialSpawn's 11x11 chunk
+/// spiral): the device only knows the chunk, so spawn-relative atoms are widened by this much.
+const SPAWN_SLACK: i32 = 128;
+
+/// Clauses for a metric relative to the spawn. The device places them around the spawn chunk's
+/// centre, widened by SPAWN_SLACK; before the climate is known (stage 1) count atoms take anywhere
+/// within SPAWN_REACH of the origin.
+fn spawn_clauses(w: &World, m: &Metric, min: f64, max: f64) -> Vec<Vec<Atom>> {
+    if let Metric::Biome { biomes, at, within, y, .. } = m {
+        // only "some sample matches" survives widening the disc. A block-level biome can come from
+        // the quart above or below and up to ~13 blocks sideways, so every quart of the wider disc
+        // (step 4) at both y quarts counts.
+        if max.is_finite() || min > f64::MIN_POSITIVE {
+            return vec![];
+        }
+        let atom = |y: i32| {
+            let mut a = [0; ATOM];
+            a[0] = 4;
+            a[1..5].copy_from_slice(&set_ints(*biomes));
+            a[5..10].copy_from_slice(&[at.0, at.1, within + SPAWN_SLACK + 16, y, 4]);
+            a[10..12].copy_from_slice(&f64_ints(f64::MIN_POSITIVE));
+            a[12..14].copy_from_slice(&f64_ints(f64::INFINITY));
+            a[15] = 1;
+            a
+        };
+        return vec![vec![atom(y - 2), atom(y + 2)]];
+    }
+    // a clause with an atom that can't be moved is dropped whole (dropping clauses only weakens)
+    clauses(w, &Cond::Metric { m: m.clone(), min, max }, true)
+        .into_iter()
+        .filter(|c| c.iter().all(|a| a[0] == 0))
+        .map(|c| {
+            c.into_iter()
+                .map(|mut a| {
+                    a[11] += SPAWN_SLACK;
+                    a[14] = SPAWN_REACH;
+                    a[15] = 1;
+                    a
+                })
+                .collect()
+        })
+        .collect()
+}
+
 fn encode(mut cl: Vec<Vec<Atom>>) -> Vec<i32> {
     // cheapest first: placement, then slime and cluster scans, then anything reading biomes
-    cl.sort_by_key(|c| c.iter().map(|a| if a[0] == 4 || a[16] != 0 { 2 } else if a[0] == 1 || a[0] == 3 { 1 } else { 0 }).max());
+    cl.sort_by_key(|c| c.iter().map(|a| if reads_climate(a) { 2 } else if a[0] == 1 || a[0] == 3 { 1 } else { 0 }).max());
     let mut p = vec![0];
     for c in cl {
         if p.len() + 1 + c.len() * ATOM > PROG_INTS {
@@ -884,6 +982,11 @@ pub fn program(w: &World, c: &Cond, full: bool) -> Vec<i32> {
     encode(clauses(w, c, full))
 }
 
+/// Biome atoms, spawn atoms, and count atoms checking start columns or placed around the spawn.
+fn reads_climate(a: &[i32]) -> bool {
+    a[0] == 4 || a[0] == 5 || (a[0] == 0 && (a[16] != 0 || a[15] != 0))
+}
+
 /// Whether a program reads biomes (it then needs a ClimDev and the filter_bio kernel).
 pub fn uses_climate(prog: &[i32]) -> bool {
     if prog.is_empty() {
@@ -894,7 +997,7 @@ pub fn uses_climate(prog: &[i32]) -> bool {
         let na = prog[k] as usize;
         k += 1;
         for a in prog[k..k + na * ATOM].chunks(ATOM) {
-            if a[0] == 4 || (a[0] == 0 && a[16] != 0) {
+            if reads_climate(a) {
                 return true;
             }
         }

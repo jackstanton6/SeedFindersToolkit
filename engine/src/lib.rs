@@ -93,6 +93,11 @@ mod py {
             })
         }
 
+        /// The world spawn (block x, z), as conditions with at="spawn" use it.
+        fn spawn(&self, seed: i64) -> (i32, i32) {
+            Eval::new(&self.w, seed, &[]).spawn()
+        }
+
         /// The block-level biome id at a block (what F3 shows).
         fn block_biome(&self, seed: i64, x: i32, y: i32, z: i32) -> u16 {
             Seeded::new(&self.w, seed).block_biome(&mut BiomeCtx::cached(), x, y, z)

@@ -25,6 +25,14 @@ RECORDS = {
 }
 
 
+SPAWN_GOALS = {  # choice -> build(values); every check is measured from the seed's real spawn point
+    "spawn in a biome": lambda v: {"op": "biome", "name": v["name"], "at": "spawn"},
+    "spawn on high ground (y at least Number)": lambda v: {"op": "height", "at": "spawn", "min": v["size"]},
+    "a structure within Number blocks of spawn": lambda v: {"op": "structure", "name": v["structure"], "within": v["size"], "at": "spawn"},
+    "spawn at least Number blocks from (0, 0)": lambda v: {"op": "spawn_distance", "min": v["size"]},
+}
+
+
 def _opt(d: dict, **kw) -> dict:
     return {**d, **{k: v for k, v in kw.items() if v not in (None, 0, False)}}
 
@@ -59,6 +67,10 @@ GOALS = [
      [("Which biome?", "name", "biome", "cherry_grove"), ("How close to spawn? (blocks)", "within", "int", 300),
       ("Covering at least this % of that area (0 = anywhere in it)", "fraction", "int", 0)],
      lambda v: _opt({"op": "biome", "name": v["name"], "within": v["within"]}, step=32 if v["within"] > 1000 else None, fraction=v["fraction"] / 100 or None)),
+    ("Where you spawn", "spawn in a jungle, on a mountain, next to a village, far from (0, 0)...",
+     [("What?", "kind", list(SPAWN_GOALS), next(iter(SPAWN_GOALS))), ("Biome (for 'in a biome')", "name", "biome", "mushroom_fields"),
+      ("Structure (for 'next to a structure')", "structure", "structure", "village"), ("Number (height, blocks)", "size", "int", 150)],
+     lambda v: SPAWN_GOALS[v["kind"]](v)),
     ("A big biome area or an island", "a huge mushroom island, a giant jungle...",
      [("Which biome?", "name", "biome", "mushroom_fields"), ("At least this big (blocks²)", "min", "int", 100000),
       ("It must be an island", "island", "bool", True), ("Within this distance of spawn (blocks)", "within", "int", 2000)],

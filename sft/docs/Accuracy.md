@@ -12,6 +12,7 @@ the way the server loads them), dumps ground truth for random positions and seed
 | biome via point resolver (structure checks) | 12,000 points | 0 mismatches |
 | chunk biomes via volume resolver (what chunks store) | 80 chunk columns × 1,536 quarts | 0 mismatches |
 | block-level (F3) biomes, `BiomeManager` zoom over stored chunk biomes | 80,000 blocks | 0 mismatches |
+| spawn search (`NoiseSpawnFinder`, `getOrigin`): position and chunk | 1,200 seeds | 0 mismatches |
 | `WORLD_SURFACE_WG` and `OCEAN_FLOOR_WG` heights (incl. aquifers) | 1,600 columns × 2 | 0 mismatches |
 | structure starts in a 97×97-chunk window: every set, placement chunk, chosen variant, start position | ~1,100 rows | 0 mismatches (mineshafts excluded, see below) |
 | stronghold ring positions | 128 per seed | 0 mismatches |
@@ -44,6 +45,9 @@ cd engine && cargo test --release -- --ignored
   piece layout, which isn't ported yet; y=50 is used. Validity can differ when the real start
   depth lands in a biome the mineshaft can't use (deep dark, or badlands for the normal variant).
   Results show these as `~approx` / `?`. Ported in M3.
+- **Spawn block.** `at="spawn"` uses the centre of the spawn chunk (exact) until full chunk
+  generation lands; the game then moves the spawn to the first standable block in an 11x11 chunk
+  spiral, usually inside that chunk (up to 8 blocks away).
 - **R-tree tie-breaking.** The game warm-starts each biome search from the previous result of the
   same thread, which only matters when two biome entries are at exactly the same distance. The
   engine keeps a warm start per evaluation context, so exact ties could in theory resolve

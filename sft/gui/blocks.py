@@ -69,6 +69,8 @@ SPECS = {
                      {"within": 1000, "at": SPAWN, "min": 10}, "10 means the frame is complete and can be lit; each obsidian still missing costs 1."),
     "portal_obsidian": ("loot", "ruined portal obsidian", "a ruined portal with at least {min} obsidian within {within} blocks of {at}", ["max"],
                         {"within": 1000, "at": SPAWN, "min": 1}, "All plain obsidian of the portal."),
+    "spawn_distance": ("terrain", "spawn distance", "the world spawn at least {min} blocks from (0, 0)", ["max"], {},
+                       "How far the real spawn point is from (0, 0). Use 'world spawn' in any block's position to measure from the spawn."),
     "native": ("plugins", "native plugin filter", "plugin {plugin} filter {filter}", ["params", "min", "max"], {}, "A filter from a Rust/C plugin."),
     "py": ("plugins", "python plugin condition", "python condition {name}", ["params"], {}, "A Python plugin condition (top-level 'all of' only)."),
 }
@@ -153,6 +155,13 @@ PRESETS = {  # ready-made queries (overworld speedrun parts and common hunts)
     "all three ring-1 strongholds close to spawn": "stronghold(within=1800) >= 3",
     "basement igloo near spawn": "igloo(within=600, tags=['basement'])",
     "ocean ruin cluster near spawn": "ocean_ruin(within=500, tags=['cluster'])",
+    "spawn in mushroom fields": "biome('mushroom_fields', at='spawn')",
+    "spawn in a jungle": "biome('#is_jungle', at='spawn')",
+    "spawn in a cherry grove": "biome('cherry_grove', at='spawn')",
+    "spawn in badlands": "biome('#is_badlands', at='spawn')",
+    "spawn on a mountain": "height(at='spawn') >= 150",
+    "village at spawn": "village(within=200, at='spawn')",
+    "spawn far from (0, 0)": "spawn_distance() >= 1000",
 }
 STRUCT_KEYS = {"structure": ["name"], "nearest": ["name"], "loot": ["name"], "near": ["a", "b"], "overlap": ["a", "b"], "anywhere": ["anchor"]}
 STRUCT_LISTS = {"cluster": "names", "chain": "names", "bingo": "names"}
@@ -176,11 +185,13 @@ def spec(op):
 
 def _say(v) -> str:
     if isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) for x in v):
-        return "spawn" if v == [0, 0] else f"({v[0]}, {v[1]})"
+        return "(0, 0)" if v == [0, 0] else f"({v[0]}, {v[1]})"
     if isinstance(v, list):
         return ", ".join(_say(x) for x in v)
     if isinstance(v, bool):
         return "yes" if v else "no"
+    if v == "spawn":
+        return "the world spawn"
     if isinstance(v, float):
         return "any" if math.isinf(v) else f"{v:.10g}"
     return str(v).replace("_", " ").removeprefix("#is ").removeprefix("minecraft:")
@@ -347,12 +358,22 @@ def make_field(editor, op: str, key: str, value, default) -> Field:
     if key == "at":
         xs, zs = (QSpinBox(minimum=-30_000_000, maximum=30_000_000, singleStep=16, fixedWidth=74) for _ in range(2))
         v = value or default or SPAWN
-        xs.setValue(v[0])
-        zs.setValue(v[1])
-        box = _row(QLabel("x"), xs, QLabel("z"), zs)
-        box.setToolTip("block coordinates (x 0, z 0 = spawn)")
-        f = Field(box, lambda: [xs.value(), zs.value()], xs.valueChanged)
+        at_spawn = QCheckBox("world spawn", checked=v == "spawn", toolTip="measure from the seed's real spawn point (slower: it is computed per seed)")
+        if v != "spawn":
+            xs.setValue(v[0])
+            zs.setValue(v[1])
+        xs.setEnabled(v != "spawn")
+        zs.setEnabled(v != "spawn")
+        box = _row(QLabel("x"), xs, QLabel("z"), zs, at_spawn)
+        box.setToolTip("block coordinates; (0, 0) is the world origin, usually a few hundred blocks from spawn")
+        f = Field(box, lambda: "spawn" if at_spawn.isChecked() else [xs.value(), zs.value()], xs.valueChanged)
         zs.valueChanged.connect(lambda *_: f.changed())
+
+        def toggled(on):
+            xs.setEnabled(not on)
+            zs.setEnabled(not on)
+            f.changed()
+        at_spawn.toggled.connect(toggled)
         return f
     if isinstance(default, bool) or isinstance(value, bool) or key in ("afk", "total", "lagoon", "exact"):
         # adding the optional 'exact' field means asking for block-level biomes

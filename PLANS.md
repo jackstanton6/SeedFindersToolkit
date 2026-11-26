@@ -332,8 +332,12 @@ region files compared block by block).
   The map hover shows the F3 biome; `World.block_biome`. Oracle: 80,000 blocks, 0 mismatches. A
   climate tie showed that the game samples a chunk's climate up front but searches the R-tree per
   lookup (thread-wide warm start); the engine now does the same.
-- [ ] 2. Spawn chunk (`NoiseSpawnFinder`, `getOrigin`), CPU and GPU (stage 2), so `at="spawn"`
+- [x] 2. Spawn chunk (`NoiseSpawnFinder`, `getOrigin`), CPU and GPU (stage 2), so `at="spawn"`
   anchors lower to the device; `spawn_distance`; spawn biome/height presets and wizard goals.
+  `at="spawn"` wraps any metric (`Metric::Spawn`); the 48-bit pre-check widens by SPAWN_REACH.
+  The device finds the spawn with the whole block (seed-independent ring offsets from the host,
+  least (fitness, index) = Java's first-wins), spawn atoms are widened by SPAWN_SLACK (the exact
+  block can be up to ~125 blocks from the chunk centre). Oracle: 1,200 seeds; GPU vs CPU: 4,000.
 - [ ] 3. Material rules (`worldgen/material_rule`, `MaterialRules`): surface, subsurface,
   terracotta bands, ice, bedrock floor, ore veins (`OreVeinRule`). Chunk block arrays and the
   four heightmaps after the noise step.

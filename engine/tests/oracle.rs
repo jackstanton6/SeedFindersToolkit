@@ -107,6 +107,29 @@ fn block_biomes_match() {
 
 #[test]
 #[ignore]
+fn spawn_matches() {
+    let w = world();
+    let mut bad = 0;
+    let mut n = 0;
+    for f in fixtures("spawn") {
+        for p in f["spawns"].as_array().unwrap() {
+            let seed = p[0].as_i64().unwrap();
+            let want = (p[1].as_i64().unwrap() as i32, p[2].as_i64().unwrap() as i32, p[3].as_i64().unwrap() as i32, p[4].as_i64().unwrap() as i32);
+            let s = Seeded::new(w, seed);
+            let (x, z) = s.spawn_origin().unwrap();
+            let (cx, cz) = s.spawn_chunk();
+            if (x, z, cx, cz) != want {
+                eprintln!("seed {seed}: got ({x},{z}) chunk ({cx},{cz}) want {want:?}");
+                bad += 1;
+            }
+            n += 1;
+        }
+    }
+    assert_eq!(bad, 0, "{bad}/{n} spawn mismatches");
+}
+
+#[test]
+#[ignore]
 fn structures_match() {
     use sft_engine::structure::Placement;
     let w = world();

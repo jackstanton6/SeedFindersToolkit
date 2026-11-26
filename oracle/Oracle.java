@@ -197,6 +197,20 @@ public class Oracle {
                     .append(",\"").append(key(manager.getBiome(x, y, z))).append("\"]");
             }
             sb.append(']');
+        } else if (mode.equals("spawn")) {
+            // NoiseSpawnFinder (via getOrigin) for many seeds: [seed, x, z, chunkX, chunkZ]
+            sb.append(",\"spawns\":[");
+            for (int i = 0; i < count; i++) {
+                long s = i == 0 ? seed : rand.nextLong();
+                RandomState r2 = RandomState.create(lookup.lookupOrThrow(Registries.NOISE), s, settings.value());
+                var pos = net.minecraft.world.level.levelgen.NoiseSpawnFinder.findSpawnPosition(settings.value().spawnTarget(),
+                    r2.samplersWithContext(SamplerContext.builder().enableCaches().build()));
+                var chunk = gen.getOrigin(r2);
+                if (i > 0) sb.append(',');
+                sb.append('[').append(s).append(',').append(pos.getX()).append(',').append(pos.getZ())
+                    .append(',').append(chunk.x()).append(',').append(chunk.z()).append(']');
+            }
+            sb.append(']');
         } else if (mode.equals("slime")) {
             // Slime.checkSlimeSpawnRules; far chunks exercise the int overflow in x*x*4987142
             sb.append(",\"chunks\":[");

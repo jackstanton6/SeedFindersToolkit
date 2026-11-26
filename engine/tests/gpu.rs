@@ -162,6 +162,27 @@ fn gpu_biomes_match_cpu() {
     assert!(unsure * 1000 < n, "{unsure} unsure");
 }
 
+/// NoiseSpawnFinder on the device (a block per seed) against the CPU port.
+#[test]
+#[ignore]
+fn gpu_spawn_matches_cpu() {
+    let w = world();
+    let g = gpu::get().expect("no usable CUDA device");
+    let clim = g.upload_climate(&gpu::ClimateProgram::new(&w).unwrap()).unwrap();
+    let mut r = sft_engine::rng::JavaRandom::new(11);
+    use sft_engine::rng::Rng;
+    let seeds: Vec<i64> = (0..4000).map(|i| if i < 4 { [0, 12345, -4172144997902289642, 8675309][i] } else { r.next_long() }).collect();
+    let t = std::time::Instant::now();
+    let got = g.spawns(&clim, &seeds).unwrap();
+    eprintln!("GPU: {} spawns in {:.2}s", seeds.len(), t.elapsed().as_secs_f64());
+    let want: Vec<(i32, i32)> = seeds.par_iter().map(|&s| sft_engine::world::Seeded::new(&w, s).spawn_origin().unwrap()).collect();
+    let wrong: Vec<usize> = (0..seeds.len()).filter(|&i| got[i] != want[i]).collect();
+    for &i in wrong.iter().take(5) {
+        eprintln!("  seed {}: gpu {:?} cpu {:?}", seeds[i], got[i], want[i]);
+    }
+    assert!(wrong.is_empty(), "{} mismatches", wrong.len());
+}
+
 /// Biome atoms (start columns, biome(...)): every seed the CPU matches must survive the GPU, in range
 /// and random modes. Prints how much more the GPU now rejects than the placement-only pre-check.
 #[test]
@@ -183,6 +204,11 @@ fn gpu_biome_atoms_keep_every_match() {
         json!({"op": "biome", "name": "#is_ocean", "within": 300, "max": 0.1}),
         json!({"op": "and", "args": [s("village", 400), b("cherry_grove", 600)]}),
         json!({"op": "or", "args": [s("desert_pyramid", 300), b("ice_spikes", 500)]}),
+        // relative to the spawn (stage 2 finds the spawn chunk)
+        json!({"op": "biome", "name": "#is_forest", "at": "spawn"}),
+        json!({"op": "biome", "name": "cherry_grove", "within": 200, "at": "spawn"}),
+        json!({"op": "structure", "name": "village", "within": 400, "at": "spawn"}),
+        json!({"op": "spawn_distance", "min": 300}),
     ];
     let n = 1u64 << 15;
     for (mode, base) in [(0, 1u64 << 33), (2, 99)] {

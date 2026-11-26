@@ -60,6 +60,10 @@ pub enum Metric {
     /// Best ruined portal: plain obsidian in its most complete frame (`frame`), or in the whole portal.
     Portal { set: usize, only: Option<usize>, at: (i32, i32), within: i32, frame: bool },
     Native { lib: usize, name: CString, params: CString },
+    /// The metric with its coordinates relative to the world spawn (`at="spawn"`).
+    Spawn(Box<Metric>),
+    /// Distance from the world origin to the world spawn.
+    SpawnDistance,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +149,7 @@ fn arguments(op: &str) -> &'static [&'static str] {
         "slime" => &["radius", "at", "within"],
         "loot" => &["name", "item", "enchant", "at", "within", "total", "biome", "tags"],
         "portal_frame" | "portal_obsidian" => &["at", "within"],
+        "spawn_distance" => &[],
         "native" => &["plugin", "filter", "params"],
         "cmp" | "maximize" | "minimize" => &["expr"],
         "anywhere" => &["cond", "at", "within", "step", "anchor"],
@@ -235,6 +240,16 @@ impl Parser<'_> {
     /// (metric, default min, default max) for a metric node.
     fn metric(&self, v: &Value) -> Result<(Metric, f64, f64), String> {
         let op = v["op"].as_str().unwrap_or_default();
+        match v.get("at").and_then(Value::as_str) {
+            Some("spawn") => {
+                let mut rel = v.clone();
+                rel.as_object_mut().unwrap().remove("at");
+                let (m, min, max) = self.metric(&rel)?;
+                return Ok((Metric::Spawn(Box::new(m)), min, max));
+            }
+            Some(other) => return Err(format!("'at' must be (x, z) or \"spawn\", got \"{other}\"")),
+            None => {}
+        }
         let at = pair(v, "at", (0, 0))?;
         let within = int(v, "within", 0);
         let (y, step) = (int(v, "y", 64), int(v, "step", 16).max(4));
@@ -337,6 +352,7 @@ impl Parser<'_> {
                 let (set, only) = self.w.structures.resolve("ruined_portal").ok_or("this version has no ruined portals")?;
                 (Metric::Portal { set, only, at, within: int(v, "within", 1000), frame }, if frame { 10.0 } else { 1.0 }, inf)
             }
+            "spawn_distance" => (Metric::SpawnDistance, 0.0, inf),
             "native" => {
                 let plugin = v["plugin"].as_str().ok_or("native needs 'plugin'")?;
                 (
@@ -440,7 +456,8 @@ impl Metric {
                 pos.0 += d.0;
                 pos.2 += d.1;
             }
-            Metric::Native { .. } => {}
+            // anchored to the spawn, not to the moved point
+            Metric::Native { .. } | Metric::Spawn(_) | Metric::SpawnDistance => {}
         }
     }
 }
@@ -735,9 +752,14 @@ thread_local! {
     static CLUSTER_CHUNKS: std::cell::RefCell<ClusterMemo> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// How far from the origin the spawn can be: NoiseSpawnFinder's two rings (2048 + 512), the
+/// spawn chunk's centre and setInitialSpawn's 11x11 chunk spiral.
+pub const SPAWN_REACH: i32 = 2048 + 512 + 16 + 5 * 16 + 16;
+
 pub struct Eval<'w> {
     pub w: &'w World,
     pub seed: i64,
+    spawn: Option<(i32, i32)>,
     pub(crate) s: Option<Seeded<'w>>,
     pub(crate) bc: BiomeCtx,
     hits: HashMap<(usize, i32, i32), Option<Hit>>,
@@ -750,11 +772,31 @@ pub struct Eval<'w> {
 
 impl<'w> Eval<'w> {
     pub fn new(w: &'w World, seed: i64, natives: &'w [Native]) -> Self {
-        Eval { w, seed, s: None, bc: BiomeCtx::cached(), hits: HashMap::new(), rings: HashMap::new(), natives, details: vec![], score: 0.0 }
+        Eval { w, seed, spawn: None, s: None, bc: BiomeCtx::cached(), hits: HashMap::new(), rings: HashMap::new(), natives, details: vec![], score: 0.0 }
     }
 
     pub(crate) fn seeded(&mut self) -> &mut Seeded<'w> {
         self.s.get_or_insert_with(|| Seeded::new(self.w, self.seed))
+    }
+
+    /// The world spawn (block x, z).
+    pub fn spawn(&mut self) -> (i32, i32) {
+        if let Some(p) = self.spawn {
+            return p;
+        }
+        // ponytail: the centre of the spawn chunk (setInitialSpawn's first guess); the exact block
+        // needs full chunks (M2 batch item 7)
+        let (cx, cz) = self.seeded().spawn_chunk();
+        let p = (cx * 16 + 8, cz * 16 + 8);
+        self.spawn = Some(p);
+        p
+    }
+
+    /// `m` moved from the origin to the spawn.
+    fn at_spawn(&mut self, m: &Metric) -> Metric {
+        let mut m = m.clone();
+        m.shift(self.spawn()); // the inner metric is never a Spawn
+        m
     }
 
     fn hit(&mut self, set: usize, c: (i32, i32)) -> Option<Hit> {
@@ -905,6 +947,8 @@ impl<'w> Eval<'w> {
             Cond::Or(v) => v.iter().any(|c| self.pre_moved(c, moved)),
             // structure anchors are start positions, up to `reach` from the locate position that is in range
             Cond::Anywhere { c, within, anchor, .. } => self.pre_moved(c, moved + within.max(&0) + anchor.as_ref().map_or(0, |a| self.w.structures.reach(a.set))),
+            // the spawn is unknown from 48 bits: treat it as anywhere within SPAWN_REACH of the origin
+            Cond::Metric { m: Metric::Spawn(m), min, max } => self.pre_moved(&Cond::Metric { m: (**m).clone(), min: *min, max: *max }, moved + SPAWN_REACH),
             // a distance up to `max` needs a start that close
             Cond::Metric { m: Metric::Nearest { s, at, within }, max, .. } if max.is_finite() => any(s.set, *at, (*within).min(max.ceil() as i32)),
             Cond::Metric { m, min, .. } if *min >= 1.0 => match m {
@@ -959,6 +1003,13 @@ impl<'w> Eval<'w> {
             Cond::Or(v) => v.iter().any(|c| self.eval(c)),
             Cond::Not(c) => !self.eval(c),
             Cond::Metric { m, min, max } => {
+                let moved;
+                let m = if let Metric::Spawn(m) = m {
+                    moved = self.at_spawn(m);
+                    &moved
+                } else {
+                    m
+                };
                 let v = match m {
                     Metric::Cluster { sels, dist, at, within, afk } => self.cluster(sels, *dist, *at, *within, *afk, *min, true),
                     _ => self.value(m, true),
@@ -1022,6 +1073,17 @@ impl<'w> Eval<'w> {
     /// A metric's value. `note` records the structures that make it (match details).
     pub fn value(&mut self, m: &Metric, note: bool) -> f64 {
         match m {
+            Metric::Spawn(m) => {
+                let m = self.at_spawn(m);
+                self.value(&m, note)
+            }
+            Metric::SpawnDistance => {
+                let p = self.spawn();
+                if note {
+                    self.details.push(json!({"type": "spawn", "x": p.0, "z": p.1}));
+                }
+                (dist2(p, (0, 0)) as f64).sqrt()
+            }
             Metric::Count { s, at, within } => {
                 let found = self.select(s, *at, *within);
                 if note {

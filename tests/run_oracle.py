@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SEEDS = [0, 12345, -4172144997902289642, 8675309]
-COUNTS = {"climate": 3000, "chunkbiomes": 20, "heights": 400, "structures": 48, "slime": 20000, "blockbiomes": 20000}
+COUNTS = {"climate": 3000, "chunkbiomes": 20, "heights": 400, "structures": 48, "slime": 20000, "blockbiomes": 20000, "spawn": 300}
 
 
 def classpath(version: str) -> str:

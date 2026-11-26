@@ -112,6 +112,9 @@ struct Clim {
     const int *noise; const u64 *noise_md5; int nnoise;
     const u64 *layer_md5; const double *layer_freq; const float *layer_amp; const int *layer_second; int nlayer;
     const int *tree; const int *kids; const i64 *space; const int *leaf_biome;
+    // NoiseSpawnFinder: both rings' offsets (x, z pairs, ring 1 then ring 2) and the spawn target
+    // ([points, per point: params, (climate root, min, max)...])
+    const int *spawn_off; int nspawn1, nspawn2; const i64 *spawn_t;
 };
 __constant__ Clim CLIM;
 
@@ -482,7 +485,7 @@ __device__ void biome_at(Cl &c, int qx, int qy, int qz, int &fresh, Bs &any) {
 // The climate of the seed being evaluated: null in the thread-per-seed `filter` kernel, where
 // biome checks pass (a superset); in `filter_bio` a whole block evaluates one seed, every thread
 // taking the same path, and shares the biome lookups out.
-struct Lazy { Cl *c; Perl *pl; i64 seed; bool ready; };
+struct Lazy { Cl *c; Perl *pl; i64 seed; bool ready; bool spawn_ready; int sx, sz; };
 __device__ __forceinline__ Cl &climate(Lazy &l) {
     if (!l.ready) {
         layers_init(l.pl, l.seed);
@@ -491,6 +494,73 @@ __device__ __forceinline__ Cl &climate(Lazy &l) {
         l.ready = true;
     }
     return *l.c;
+}
+
+// world.rs Seeded::spawn_fitness (NoiseSpawnFinder.getSpawnPositionAndFitness)
+__device__ i64 spawn_fitness(Cl &c, int x, int z) {
+    int qx = (x >> 2) << 2, qz = (z >> 2) << 2;
+    const i64 *t = CLIM.spawn_t;
+    int np = (int)t[0], k = 1;
+    i64 mn = 0x7FFFFFFFFFFFFFFFLL;
+    for (int p = 0; p < np; p++) {
+        int n = (int)t[k++];
+        i64 f = 0;
+        for (int i = 0; i < n; i++, k += 3) {
+            i64 v = quantize(sample(c, CLIM.roots[(int)t[k]], qx, 0, qz));
+            i64 d = v - t[k + 2] > 0 ? v - t[k + 2] : (t[k + 1] - v > 0 ? t[k + 1] - v : 0);
+            f += d * d;
+        }
+        mn = f < mn ? f : mn;
+    }
+    return mn * 2048 * 2048 + (i64)x * x + (i64)z * z;
+}
+
+// radialSearch around (bx, bz) with fitness bf, the whole block sharing the candidates: Java keeps the
+// first candidate that beats the best so far, i.e. the least (fitness, index), the centre being -1
+__device__ void spawn_ring(Cl &c, const int *off, int n, int &bx, int &bz, i64 &bf) {
+    __shared__ i64 sf[128];
+    __shared__ int sk[128];
+    i64 f0 = bf;
+    int bk = -1;
+    for (int k = threadIdx.x; k < n; k += blockDim.x) {
+        i64 f = spawn_fitness(c, bx + off[2 * k], bz + off[2 * k + 1]);
+        if (f < f0) { f0 = f; bk = k; }
+    }
+    sf[threadIdx.x] = f0;
+    sk[threadIdx.x] = bk;
+    __syncthreads();
+    for (int h = blockDim.x / 2; h > 0; h >>= 1) {
+        int t = threadIdx.x, o = t + h;
+        if (t < h && (sf[o] < sf[t] || (sf[o] == sf[t] && sk[o] < sk[t]))) { sf[t] = sf[o]; sk[t] = sk[o]; }
+        __syncthreads();
+    }
+    bk = sk[0];
+    bf = sf[0];
+    __syncthreads();
+    if (bk >= 0) { bx += off[2 * bk]; bz += off[2 * bk + 1]; }
+}
+
+// NoiseSpawnFinder.findSpawnPosition (block x, z) for the block's seed; blockDim a power of two <= 128
+__device__ void spawn_origin(Cl &c, int &x, int &z) {
+    x = 0;
+    z = 0;
+    if (CLIM.spawn_t[0] == 0) return;  // no spawn target: getOrigin is chunk (0, 0)
+    i64 f = spawn_fitness(c, 0, 0);
+    spawn_ring(c, CLIM.spawn_off, CLIM.nspawn1, x, z, f);
+    spawn_ring(c, CLIM.spawn_off + 2 * CLIM.nspawn1, CLIM.nspawn2, x, z, f);
+}
+
+// query.rs Eval::spawn: the centre of the spawn chunk
+__device__ void spawn_at(Lazy &l, int &x, int &z) {
+    if (!l.spawn_ready) {
+        int bx, bz;
+        spawn_origin(climate(l), bx, bz);
+        l.sx = (bx >> 4) * 16 + 8;
+        l.sz = (bz >> 4) * 16 + 8;
+        l.spawn_ready = true;
+    }
+    x = l.sx;
+    z = l.sz;
 }
 
 // structure.rs column_ok: some quart of the start column allows the structure (unsure counts as yes)
@@ -518,6 +588,8 @@ __device__ __forceinline__ double dbl(const int *a) { return __hiloint2double(a[
 __device__ bool biome_atom(Lazy &l, const int *a) {
     int ax = a[5], az = a[6], within = a[7], y = a[8], step = a[9];
     double mn = dbl(a + 10), mx = dbl(a + 12);
+    if (!l.c) return true;
+    if (a[15]) { int sx, sz; spawn_at(l, sx, sz); ax += sx; az += sz; }
     int n = 2 * (within / step) + 1;
     int x0 = ax - (n / 2) * step, z0 = az - (n / 2) * step;
     i64 w2 = (i64)within * within;
@@ -556,10 +628,24 @@ __device__ bool biome_atom(Lazy &l, const int *a) {
     return (double)hi / total >= mn && (double)lo / total <= mx;
 }
 
+// query.rs Metric::SpawnDistance within [min, max], the spawn known to `a[5]` blocks
+__device__ bool spawn_distance_atom(Lazy &l, const int *a) {
+    if (!l.c) return true;
+    int sx, sz;
+    spawn_at(l, sx, sz);
+    double d = sqrt((double)sx * sx + (double)sz * sz);
+    return d + a[5] >= dbl(a + 1) && d - a[5] <= dbl(a + 3);
+}
+
 // query::potential count (no exclusion zones), stopping at `min`; with a[16], each start's column
 // must also allow the structure's biomes
 __device__ bool count_atom(i64 seed, const int *a, Lazy &l) {
     int spacing = a[1], ox = a[7], oz = a[8], ax = a[9], az = a[10], r = a[11], min = a[12];
+    if (a[15]) {
+        // relative to the spawn: anywhere within a[14] of the origin until the climate is known
+        if (!l.c) r += a[14];
+        else { int sx, sz; spawn_at(l, sx, sz); ax += sx; az += sz; }
+    }
     float f = __int_as_float(a[6]);
     int gx0 = floordiv(floordiv(ax - r - ox, 16), spacing), gx1 = floordiv(floordiv(ax + r - ox, 16), spacing);
     int gz0 = floordiv(floordiv(az - r - oz, 16), spacing), gz1 = floordiv(floordiv(az + r - oz, 16), spacing);
@@ -679,6 +765,7 @@ __device__ bool eval(i64 seed, Lazy &l) {
             case 1: ok = slime_atom(seed, a); break;
             case 2: ok = cell_atom(seed, a); break;
             case 3: ok = cluster_atom(seed, a); break;
+            case 5: ok = spawn_distance_atom(l, a); break;
             default: ok = biome_atom(l, a);
             }
         }
@@ -746,6 +833,18 @@ extern "C" __global__ void filter_bio(const unsigned *surv, u64 lo, int mode, u6
         unsigned k = atomicAdd(count, 1u);
         if (k < cap) out[k] = i;
     }
+}
+
+// Parity: NoiseSpawnFinder for each seed, a block per seed; out = x, z pairs.
+extern "C" __global__ void spawns(const i64 *seeds, int *out) {
+    __shared__ Perl pl[MAX_LAYERS];
+    layers_init(pl, seeds[blockIdx.x]);
+    Cl c;
+    c.pl = pl;
+    c.valid = 0;
+    int x, z;
+    spawn_origin(c, x, z);
+    if (threadIdx.x == 0) { out[2 * blockIdx.x] = x; out[2 * blockIdx.x + 1] = z; }
 }
 
 // Crack brute force: index idx -> seed (idx / nlows) << bits | lows[idx % nlows], for idx in base..base+n.

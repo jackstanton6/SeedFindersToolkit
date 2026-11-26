@@ -2,7 +2,7 @@
 //! climate/biomes on both evaluation paths, and getBaseHeight/getBaseColumn with the aquifer.
 
 use crate::biome::{quantize, Biomes, Climate};
-use crate::density::{parse, Caches, Compiler, Ctx, Df, Volume, S};
+use crate::density::{f32_of, parse, Caches, Compiler, Ctx, Df, Volume, S};
 use crate::noise::NormalNoise;
 use crate::rng::{lcg_next, obfuscate_seed, JavaRandom, Positional, Xoroshiro};
 use serde_json::Value;
@@ -46,6 +46,8 @@ pub struct World {
     pub height: i32,
     legacy_random: bool,
     climate_dfs: Vec<Df>,
+    /// NoiseGeneratorSettings.spawnTarget: per target point, (climate sampler index, min, max).
+    pub spawn_target: Vec<Vec<(usize, i64, i64)>>,
     final_density: Df,
     aquifer_dfs: Option<Vec<Df>>,
     pub biomes: Biomes,
@@ -82,6 +84,16 @@ impl World {
             _ => None,
         };
         let final_density = parse(&router["final_density"])?;
+        // spawn target functions are the router's climate functions (by reference)
+        let mut spawn_target = vec![];
+        for point in s["spawn_target"].as_array().into_iter().flatten() {
+            let mut params = vec![];
+            for (name, range) in point.as_object().ok_or("spawn_target point must be an object")? {
+                let i = CLIMATE.iter().position(|k| router[*k].as_str() == Some(name)).ok_or(format!("spawn_target function {name} is not a climate function"))?;
+                params.push((i, quantize(f32_of(&range[0])), quantize(f32_of(&range[1]))));
+            }
+            spawn_target.push(params);
+        }
         let mut todo: Vec<String> = vec![];
         for df in climate_dfs.iter().chain([&final_density]).chain(aquifer_dfs.iter().flatten()) {
             df.refs(&mut todo);
@@ -110,6 +122,7 @@ impl World {
             height: s["noise"]["height"].as_i64().unwrap() as i32,
             legacy_random: s["legacy_random_source"].as_bool().unwrap_or(false),
             climate_dfs,
+            spawn_target,
             final_density,
             aquifer_dfs,
             biomes,
@@ -241,6 +254,49 @@ impl<'w> Seeded<'w> {
             })
             .collect();
         (0..vol.size()).map(|i| std::array::from_fn(|k| if k < 6 { quantize(bufs[k][i]) } else { 0 })).collect()
+    }
+
+    /// NoiseSpawnFinder.findSpawnPosition (block x, z; y is 0): the climate point closest to the
+    /// spawn targets, biased towards the origin. None when the settings have no spawn target.
+    pub fn spawn_origin(&self) -> Option<(i32, i32)> {
+        if self.w.spawn_target.is_empty() {
+            return None;
+        }
+        // getOrigin: one sampler context with caches for the whole search
+        let mut ctx = Ctx::cached();
+        let mut best = self.spawn_fitness(&mut ctx, 0, 0);
+        for ring in spawn_rings() {
+            let origin = best.0;
+            for &(dx, dz) in ring {
+                let c = self.spawn_fitness(&mut ctx, origin.0 + dx, origin.1 + dz);
+                if c.1 < best.1 {
+                    best = c;
+                }
+            }
+        }
+        Some(best.0)
+    }
+
+    /// NoiseSpawnFinder.getSpawnPositionAndFitness
+    fn spawn_fitness(&self, ctx: &mut Ctx, x: i32, z: i32) -> ((i32, i32), i64) {
+        let (qx, qz) = ((x >> 2) << 2, (z >> 2) << 2);
+        let mut min = i64::MAX;
+        for point in &self.w.spawn_target {
+            let mut f = 0i64;
+            for &(i, lo, hi) in point {
+                let v = quantize(self.climate[i].sample(ctx, qx, 0, qz));
+                let d = if v - hi > 0 { v - hi } else { (lo - v).max(0) };
+                f += d * d;
+            }
+            min = min.min(f);
+        }
+        let bias = (x as i64) * (x as i64) + (z as i64) * (z as i64);
+        ((x, z), min * 2048 * 2048 + bias)
+    }
+
+    /// ChunkGenerator.getOrigin: the chunk setInitialSpawn starts from ((0, 0) without targets).
+    pub fn spawn_chunk(&self) -> (i32, i32) {
+        self.spawn_origin().map_or((0, 0), |(x, z)| (x >> 4, z >> 4))
     }
 
     /// The biome a chunk stores at a quart (ChunkAccess.getNoiseBiome: y clamped to the world).
@@ -650,4 +706,25 @@ fn fiddled_distance(seed: i64, x: i32, y: i32, z: i32, dx: f64, dy: f64, dz: f64
 /// BiomeManager.getFiddle
 fn fiddle(r: i64) -> f64 {
     ((r >> 24).rem_euclid(1024) as f64 / 1024.0 - 0.5) * 0.9
+}
+
+/// NoiseSpawnFinder.radialSearch's candidates as offsets from the search origin, for its two calls
+/// (2048 by 512, then 512 by 32). They don't depend on the seed (the GPU gets the same list).
+pub fn spawn_rings() -> &'static [Vec<(i32, i32)>; 2] {
+    static RINGS: std::sync::OnceLock<[Vec<(i32, i32)>; 2]> = std::sync::OnceLock::new();
+    RINGS.get_or_init(|| {
+        [(2048.0f32, 512.0f32), (512.0, 32.0)].map(|(max_radius, inc)| {
+            let (mut angle, mut radius, mut v) = (0.0f32, inc, vec![]);
+            while radius <= max_radius {
+                // (int)(Math.sin(angle) * radius): float angle and radius widened to double
+                v.push((((angle as f64).sin() * radius as f64) as i32, ((angle as f64).cos() * radius as f64) as i32));
+                angle += inc / radius;
+                if angle as f64 > std::f64::consts::PI * 2.0 {
+                    angle = 0.0;
+                    radius += inc;
+                }
+            }
+            v
+        })
+    })
 }

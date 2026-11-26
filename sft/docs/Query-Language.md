@@ -11,7 +11,13 @@ maximize(island(biomes=["mushroom_fields"], within=3000))
 
 - Combine with `and`, `or`, `not` and parentheses.
 - Arguments must be literals: numbers, strings, lists, tuples, `True`/`False`.
-- Coordinates are block coordinates; `at=(x, z)` defaults to `(0, 0)`.
+- Coordinates are block coordinates; `at=(x, z)` defaults to `(0, 0)`, the world origin.
+- `at="spawn"` measures from the seed's real spawn point instead, for any condition:
+  `biome("mushroom_fields", at="spawn")`, `village(within=200, at="spawn")`. The spawn is
+  computed per seed (about 1,400 climate samples), and the 48-bit pre-check has to allow for
+  every spawn position (up to ~2,700 blocks from the origin), so spawn-anchored structure checks
+  filter much less than the same check at `(0, 0)`. Combine them with a condition at `(0, 0)` when
+  you can. On the GPU the spawn chunk is found on the device.
 - Any call that is not one of the condition names below is shorthand for `structure(name, ...)`:
   `village(within=300)` is `structure("village", within=300)`.
 
@@ -188,6 +194,17 @@ island(within=2000, min_circularity=0.6, lagoon=True)
 ```
 
 ## Terrain
+
+### spawn_distance()
+
+Distance from `(0, 0)` to the world spawn, in blocks. The game picks the spawn with
+`NoiseSpawnFinder`: the closest climate to its spawn targets (inland, not on weird peaks), with a
+pull towards the origin, so most spawns are within a few hundred blocks.
+
+```python
+spawn_distance() >= 1000
+maximize(spawn_distance())
+```
 
 ### climate(param, at=(0,0), y=64)
 
