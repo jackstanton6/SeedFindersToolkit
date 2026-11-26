@@ -86,12 +86,14 @@ impl JSet {
 
 pub enum Trunk {
     Straight,
+    Fancy,
     /// not ported yet: the tree is not placed
     Other(String),
 }
 
 pub enum Foliage {
     Blob { height: i32 },
+    Fancy { height: i32 },
     Other(String),
 }
 
@@ -126,6 +128,7 @@ impl Tree {
             below_trunk: Provider::parse(&v["below_trunk_provider"], w)?,
             trunk: match tp["type"].as_str().unwrap_or_default() {
                 "minecraft:straight_trunk_placer" => Trunk::Straight,
+                "minecraft:fancy_trunk_placer" => Trunk::Fancy,
                 t => Trunk::Other(t.to_string()),
             },
             base_height: i(tp, "base_height", 0),
@@ -133,6 +136,7 @@ impl Tree {
             rand_b: i(tp, "height_rand_b", 0),
             foliage: match fp["type"].as_str().unwrap_or_default() {
                 "minecraft:blob_foliage_placer" => Foliage::Blob { height: i(fp, "height", 0) },
+                "minecraft:fancy_foliage_placer" => Foliage::Fancy { height: i(fp, "height", 0) },
                 t => Foliage::Other(t.to_string()),
             },
             radius: IntP::parse(&fp["radius"])?,
@@ -221,6 +225,7 @@ fn leaves_row(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, sets: &mut Sets, o:
 fn skip(f: &Foliage, r: &mut WorldgenXoro, dx: i32, y: i32, dz: i32, radius: i32) -> bool {
     match f {
         Foliage::Blob { .. } => dx == radius && dz == radius && (r.next_bound(2) == 0 || y == 0),
+        Foliage::Fancy { .. } => (dx as f32 + 0.5) * (dx as f32 + 0.5) + (dz as f32 + 0.5) * (dz as f32 + 0.5) > (radius * radius) as f32,
         Foliage::Other(_) => true,
     }
 }
@@ -235,7 +240,7 @@ pub fn tree(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, o: P) -> bool {
     // doPlace
     let tree_height = t.base_height + r.next_bound(t.rand_a + 1) + r.next_bound(t.rand_b + 1);
     let foliage_height = match t.foliage {
-        Foliage::Blob { height } => height,
+        Foliage::Blob { height } | Foliage::Fancy { height } => height,
         Foliage::Other(_) => 0,
     };
     let trunk_height = tree_height - foliage_height;
@@ -268,16 +273,13 @@ pub fn tree(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, o: P) -> bool {
     // trunk
     let attachments: Vec<(P, i32, bool)> = match t.trunk {
         Trunk::Straight => {
-            let below = rel(trunk_origin, 0);
-            if let Some(s) = t.below_trunk.optional(l, r, below) {
-                sets.trunks.insert(below);
-                l.set_flags(below, s, 19);
-            }
+            below_trunk(l, r, t, &mut sets, rel(trunk_origin, 0));
             for y in 0..clipped {
                 place_log(l, r, t, &mut sets, (trunk_origin.0, trunk_origin.1 + y, trunk_origin.2));
             }
             vec![((trunk_origin.0, trunk_origin.1 + clipped, trunk_origin.2), 0, false)]
         }
+        Trunk::Fancy => fancy_trunk(l, r, t, &mut sets, clipped, trunk_origin),
         Trunk::Other(_) => vec![],
     };
     // foliage
@@ -292,6 +294,14 @@ pub fn tree(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, o: P) -> bool {
                     yo -= 1;
                 }
             }
+            Foliage::Fancy { .. } => {
+                let mut yo = offset;
+                while yo >= offset - foliage_height {
+                    let radius = leaf_radius + if yo != offset && yo != offset - foliage_height { 1 } else { 0 };
+                    leaves_row(l, r, t, &mut sets, pos, radius, yo, double);
+                    yo -= 1;
+                }
+            }
             Foliage::Other(_) => {}
         }
     }
@@ -301,6 +311,110 @@ pub fn tree(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, o: P) -> bool {
     // ponytail: tree decorators (vines, beehives, cocoa...) are being ported
     update_leaves(l, &sets);
     true
+}
+
+fn below_trunk(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, sets: &mut Sets, p: P) {
+    if let Some(s) = t.below_trunk.optional(l, r, p) {
+        sets.trunks.insert(p);
+        l.set_flags(p, s, 19);
+    }
+}
+
+/// placeLog with the log turned along an axis (trySetValue(AXIS, ...))
+fn place_log_axis(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, sets: &mut Sets, p: P, axis: &str) -> bool {
+    if valid_tree_pos(l, p) {
+        let s = t.trunk_provider.state(l, r, p);
+        let s = l.w.blocks.with(s, "axis", axis).unwrap_or(s);
+        sets.trunks.insert(p);
+        l.set_flags(p, s, 19);
+        true
+    } else {
+        false
+    }
+}
+
+/// FancyTrunkPlacer.makeLimb
+#[allow(clippy::too_many_arguments)]
+fn make_limb(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, sets: &mut Sets, start: P, end: P, place: bool) -> bool {
+    if !place && start == end {
+        return true;
+    }
+    let d = (end.0 - start.0, end.1 - start.1, end.2 - start.2);
+    let steps = d.0.abs().max(d.1.abs().max(d.2.abs()));
+    let (dx, dy, dz) = (d.0 as f32 / steps as f32, d.1 as f32 / steps as f32, d.2 as f32 / steps as f32);
+    for i in 0..=steps {
+        let p = (start.0 + (0.5f32 + i as f32 * dx).floor() as i32, start.1 + (0.5f32 + i as f32 * dy).floor() as i32, start.2 + (0.5f32 + i as f32 * dz).floor() as i32);
+        if place {
+            let (xd, zd) = ((p.0 - start.0).abs(), (p.2 - start.2).abs());
+            let m = xd.max(zd);
+            let axis = if m > 0 { if xd == m { "x" } else { "z" } } else { "y" };
+            place_log_axis(l, r, t, sets, p, axis);
+        } else if !is_free(l, p) {
+            return false;
+        }
+    }
+    true
+}
+
+/// FancyTrunkPlacer.treeShape
+fn tree_shape(height: i32, y: i32) -> f32 {
+    if (y as f32) < height as f32 * 0.3 {
+        return -1.0;
+    }
+    let radius = height as f32 / 2.0;
+    let adjacent = radius - y as f32;
+    let mut distance = ((radius * radius - adjacent * adjacent) as f64).sqrt() as f32;
+    if adjacent == 0.0 {
+        distance = radius;
+    } else if adjacent.abs() >= radius {
+        return 0.0;
+    }
+    distance * 0.5
+}
+
+/// FancyTrunkPlacer.placeTrunk: attachments (pos, radius offset, double trunk)
+fn fancy_trunk(l: &mut Level, r: &mut WorldgenXoro, t: &Tree, sets: &mut Sets, tree_height: i32, o: P) -> Vec<(P, i32, bool)> {
+    let height = tree_height + 2;
+    let trunk_height = (height as f64 * 0.618).floor() as i32;
+    below_trunk(l, r, t, sets, rel(o, 0));
+    let clusters = 1.min((1.382 + (1.0 * height as f64 / 13.0).powf(2.0)).floor() as i32);
+    let trunk_top = o.1 + trunk_height;
+    let mut rel_y = height - 5;
+    // (attachment pos, branch base y)
+    let mut coords: Vec<(P, i32)> = vec![((o.0, o.1 + rel_y, o.2), trunk_top)];
+    while rel_y >= 0 {
+        let shape = tree_shape(height, rel_y);
+        if shape >= 0.0 {
+            for _ in 0..clusters {
+                let radius = 1.0 * shape as f64 * (r.next_float() as f64 + 0.328);
+                let angle = (r.next_float() * 2.0) as f64 * std::f64::consts::PI;
+                let x = radius * angle.sin() + 0.5;
+                let z = radius * angle.cos() + 0.5;
+                let start = (o.0 + x.floor() as i32, o.1 + rel_y - 1, o.2 + z.floor() as i32);
+                let end = (start.0, start.1 + 5, start.2);
+                if make_limb(l, r, t, sets, start, end, false) {
+                    let (dx, dz) = (o.0 - start.0, o.2 - start.2);
+                    let branch_height = start.1 as f64 - ((dx * dx + dz * dz) as f64).sqrt() * 0.381;
+                    let branch_top = if branch_height > trunk_top as f64 { trunk_top } else { branch_height as i32 };
+                    let base = (o.0, branch_top, o.2);
+                    if make_limb(l, r, t, sets, base, start, false) {
+                        coords.push((start, base.1));
+                    }
+                }
+            }
+        }
+        rel_y -= 1;
+    }
+    make_limb(l, r, t, sets, o, (o.0, o.1 + trunk_height, o.2), true);
+    // makeBranches
+    let trim = |y: i32| y as f64 >= height as f64 * 0.2;
+    for &(pos, base_y) in &coords {
+        let base = (o.0, base_y, o.2);
+        if base != pos && trim(base_y - o.1) {
+            make_limb(l, r, t, sets, base, pos, true);
+        }
+    }
+    coords.into_iter().filter(|&(_, b)| trim(b - o.1)).map(|(p, _)| (p, 0, false)).collect()
 }
 
 /// TreeFeature.updateLeaves: leaf distances from the logs, nearest first.

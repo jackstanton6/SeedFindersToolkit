@@ -423,8 +423,11 @@ features ~12,000 lines with 47 feature types behind 240 configured features; the
   vegetation patches (moss, clay), speleothems (dripstone), underwater magma (bubble columns),
   lakes, springs, and smaller ones (see the test's mismatch table).
   Progress log: + block_column (kelp), vegetation patches (`patch.rs`, Java HashSet order),
-  trees (`tree.rs`: TreeFeature, JSet = java.util.HashSet simulation, leaf distance pass; only
-  straight trunk + blob foliage so far, other placers make the tree skip; decorators not yet).
+  trees (`tree.rs`: TreeFeature, JSet = java.util.HashSet simulation, leaf distance pass;
+  straight + fancy trunks, blob + fancy foliage so far, other placers make the tree skip;
+  decorators not yet). Open question at 41,130 mismatches: some oak leaves appear where the
+  server has none (fancy oak suspected: check FancyTrunkPlacer against one tree), others are
+  unported placers (oak bush, jungle).
   Next in order: remaining trunk placers (fancy, poplar, dark_oak, cherry, upwards_branching,
   giant, forking, bending, mega_jungle), foliage placers (fancy, poplar, dark_oak,
   random_spread, cherry, mega_pine, acacia, bush, jungle, pine, spruce), root placer (mangrove),
