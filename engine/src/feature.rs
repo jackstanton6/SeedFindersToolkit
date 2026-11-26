@@ -893,6 +893,8 @@ pub enum Feature {
     SimpleBlock { to_place: Provider },
     Freeze,
     Geode(Box<crate::geode::Geode>),
+    /// BlockColumnFeature: layers (height, provider), direction, allowed placement, prioritize tip
+    BlockColumn(Vec<(IntP, Provider)>, usize, Pred, bool),
     /// A feature type that is not ported yet: places nothing.
     Unported(String),
 }
@@ -970,6 +972,12 @@ impl Registry {
             },
             "minecraft:simple_block" => Feature::SimpleBlock { to_place: Provider::parse(&v["to_place"], w)? },
             "minecraft:freeze_top_layer" => Feature::Freeze,
+            "minecraft:block_column" => Feature::BlockColumn(
+                v["layers"].as_array().ok_or("layers")?.iter().map(|x| Ok((IntP::parse(&x["height"])?, Provider::parse(&x["provider"], w)?))).collect::<Result<_, String>>()?,
+                direction(v["direction"].as_str().unwrap_or("up"))?,
+                Pred::parse(&v["allowed_placement"], w)?,
+                v["prioritize_tip"].as_bool().unwrap_or(false),
+            ),
             "minecraft:geode" => Feature::Geode(Box::new(crate::geode::Geode::parse(v, w)?)),
             t => Feature::Unported(t.to_string()),
         }))
@@ -1167,6 +1175,7 @@ fn place_feature(cx: &mut Ctx, l: &mut Level, r: &mut WorldgenXoro, f: &Feature,
         Feature::SimpleBlock { to_place } => simple_block(l, r, to_place, p),
         Feature::Freeze => freeze(l, p),
         Feature::Geode(g) => crate::geode::geode(l, r, g, p),
+        Feature::BlockColumn(layers, dir, allowed, tip) => block_column(l, r, layers, *dir, allowed, *tip, p),
     }
 }
 
@@ -1382,6 +1391,42 @@ fn simple_block(l: &mut Level, r: &mut WorldgenXoro, to_place: &Provider, p: P) 
     } else {
         // ponytail: mossy carpets (pale garden) are placed as a plain block
         l.set(p, s);
+    }
+    true
+}
+
+/// BlockColumnFeature.place
+fn block_column(l: &mut Level, r: &mut WorldgenXoro, layers: &[(IntP, Provider)], dir: usize, allowed: &Pred, tip: bool, o: P) -> bool {
+    let mut heights: Vec<i32> = layers.iter().map(|(h, _)| h.sample(r)).collect();
+    let total: i32 = heights.iter().sum();
+    if total == 0 {
+        return false;
+    }
+    let mut next = rel(o, dir);
+    for y in 0..total {
+        if !allowed.test(l, next) {
+            // truncate
+            let mut remove = total - y;
+            let order: Vec<usize> = if tip { (0..heights.len()).collect() } else { (0..heights.len()).rev().collect() };
+            for i in order {
+                if remove <= 0 {
+                    break;
+                }
+                let k = heights[i].min(remove);
+                remove -= k;
+                heights[i] -= k;
+            }
+            break;
+        }
+        next = rel(next, dir);
+    }
+    let mut p = o;
+    for (i, (_, prov)) in layers.iter().enumerate() {
+        for _ in 0..heights[i] {
+            let s = prov.state(l, r, p);
+            l.set(p, s);
+            p = rel(p, dir);
+        }
     }
     true
 }
