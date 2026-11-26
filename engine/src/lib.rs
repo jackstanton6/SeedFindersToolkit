@@ -11,6 +11,7 @@ pub mod feature;
 pub mod fluid;
 pub mod geode;
 pub mod patch;
+pub mod tree;
 pub mod crack;
 pub mod density;
 pub mod gpu;

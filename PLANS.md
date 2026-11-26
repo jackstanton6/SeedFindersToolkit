@@ -422,6 +422,15 @@ features ~12,000 lines with 47 feature types behind 240 configured features; the
   time of writing (77k -> ~40k differing blocks of 19.3M): kelp, trees (+ decorators, vines),
   vegetation patches (moss, clay), speleothems (dripstone), underwater magma (bubble columns),
   lakes, springs, and smaller ones (see the test's mismatch table).
+  Progress log: + block_column (kelp), vegetation patches (`patch.rs`, Java HashSet order),
+  trees (`tree.rs`: TreeFeature, JSet = java.util.HashSet simulation, leaf distance pass; only
+  straight trunk + blob foliage so far, other placers make the tree skip; decorators not yet).
+  Next in order: remaining trunk placers (fancy, poplar, dark_oak, cherry, upwards_branching,
+  giant, forking, bending, mega_jungle), foliage placers (fancy, poplar, dark_oak,
+  random_spread, cherry, mega_pine, acacia, bush, jungle, pine, spruce), root placer (mangrove),
+  tree decorators, then speleothem/dripstone, underwater_magma, lake, spring, the coral, fallen
+  tree, bamboo, iceberg, blue ice, fossil/template, monster room, multiface, sculk, vines, spike,
+  block_blob, huge mushrooms, root_system; survival rules for remaining plant classes.
 - 6b. Feature types, most common first: ores, disks, springs, lakes, freeze_top_layer, patches and
   simple blocks, trees (trunk/foliage placers, decorators), mushrooms, bamboo, ocean plants,
   icebergs, blue ice, geodes, fossils, dungeons, dripstone, lush caves, sculk, glow lichen, ...
