@@ -401,7 +401,11 @@ features ~12,000 lines with 47 feature types behind 240 configured features; the
 - [x] 5a. (done) Ground truth for decoration: dedicated-server worlds compared block for block (FULL chunks
   from region files, inner chunks only, as tests/export_oracle.py does), with datapacks that empty
   every biome's feature list (structures + beardifier alone) or remove every structure set
-  (features alone), so each half can be verified without the other.
+  (features alone), so each half can be verified without the other. `tests/decoration_oracle.py`
+  (ticks frozen, areas away from spawn). It exposed and fixed: stored biomes are searched eagerly
+  in fillBiomesFromNoise order (R-tree ties), and the post-processing fluid tick at FULL
+  (`fluid.rs`, aquifer shouldScheduleFluidUpdate marks). Block predicates (collision, sturdy
+  faces, fluids) come from `reports/block_props.json` (sft/java/BlockProps.java at data setup).
 - 5b. StructureTemplate.placeInWorld and the processors the overworld uses (rule, block_rot,
   gravity, block_age, capped, protected_blocks, lava_submerged_block, jigsaw replacement, fluid
   handling): igloo, shipwreck, ocean ruins, ruined portal.
