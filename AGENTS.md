@@ -20,6 +20,10 @@ engine/src/
   world.rs      World (data/<ver>), Seeded (= RandomState): biomes, getBaseHeight, columns, aquifer
   structure.rs  structure sets, placement, findGenerationPoint per type, jigsaw starts, NBT templates,
                 piece details and chest loot seeds
+  blocks.rs     block states with the game's ids (reports/blocks.json), properties, block tags
+  chunk.rs      full chunks: doFill (noise + aquifer), MaterialSystem.buildSurface (material rules,
+                bands, extensions, ore veins, bedrock), heightmaps, per-seed chunk cache, bedrock_floor
+  carver.rs     cave and canyon carvers, the carving mask, applyCarvingMask
   query.rs      conditions: numeric metrics, expressions, objectives, anywhere; 48-bit pre-check +
                 full eval (Eval); single-seed scan
   search.rs     threaded search runner (modes, stats, ranked top-N), native plugin ABI
@@ -37,9 +41,11 @@ engine/tests/oracle.rs   parity tests against the real game (ignored by default)
 engine/tests/gpu.rs      GPU kernel vs CPU parity: pre-check, biomes, superset of matches (ignored; needs CUDA)
 oracle/Oracle.java       ground-truth dumper that runs the actual 26.3 server classes
 tests/loot_oracle.py     loot ground truth from the dedicated server (EULA) and its region files
-sft/            __init__ (World cache, Job, export), query, plugins, data, __main__ (CLI), gui/
+tests/export_oracle.py   `export --mca` read back by the dedicated server
+sft/            __init__ (World cache, Job, export), query, plugins, data, __main__ (CLI), worldfile
+                (Anvil/.schem writers), gui/
 sft/gui/        app (main window), blocks (block editor + palette), wizard ("I want..."), help (help
-                window + tour), mapview
+                window + tour), mapview, chunkview (chunk inspector)
 plugins/        example_rust (native cdylib), example_python
 sft/docs/       user documentation (shipped in the package: the help window shows it)
 ```
@@ -113,8 +119,10 @@ new behaviour "looks" better.
   clusters/chains/overlaps/bingo, biome-grid and island analysis, terrain scans, slime chunks,
   single-seed scan, cracking, placement stats, rarity, chest loot for seven structure types, ruined
   portal completeness, speedrun presets (all oracle-verified).
-- **M2:** spawn point (`NoiseSpawnFinder`), surface blocks (material rules), block-level biomes
-  (`BiomeManager` zoom).
+- **M2 (in progress, see PLANS.md "M2 batch"):** block-level biomes, spawn chunk (CPU + GPU), full
+  TERRAIN-status chunks (noise, material rules, carvers; oracle-verified block for block), block
+  conditions, bedrock cracking, export, map block layers. Left: structure pieces and the
+  beardifier, decoration features, the exact spawn block.
 - **M3:** structure pieces (mineshaft depth exact, village layouts, loot), features and decoration
   (trees, sugar cane, cacti, ores, geodes).
 - **GPU biomes (done):** climate and biomes on the device, lowered `biome(...)` and structure start
