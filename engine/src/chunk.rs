@@ -999,7 +999,7 @@ impl<'w> Chunks<'w> {
         let w = self.s.w;
         // FEATURES: the 3x3 chunks around this one are decorated (each writes one chunk around
         // it), so the 5x5 TERRAIN chunks are needed
-        // ponytail: the game decorates neighbours in no fixed order; here rows of x, z ascending
+        // ponytail: the game decorates neighbours in no fixed order
         let mut terrain = HashMap::new();
         for dz in -2..=2 {
             for dx in -2..=2 {
@@ -1008,11 +1008,11 @@ impl<'w> Chunks<'w> {
         }
         let seed = self.s.seed;
         let mut level = crate::feature::Level { w, m: w.materials()?, s: &self.s, chunks: terrain, centre: (cx, cz), bc: BiomeCtx::cached() };
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                level.centre = (cx + dx, cz + dz);
-                crate::feature::decorate(&mut level, seed)?;
-            }
+        // x ascending, then z: of the orders tried this fits the server worlds best (overlapping
+        // tree canopies depend on it: leaves are replaceable by trees)
+        for (dx, dz) in (-1..=1).flat_map(|dx| (-1..=1).map(move |dz| (dx, dz))) {
+            level.centre = (cx + dx, cz + dz);
+            crate::feature::decorate(&mut level, seed)?;
         }
         let around: Vec<Chunk> = (-1..=1).flat_map(|dz| (-1..=1).map(move |dx| (dx, dz))).map(|(dx, dz)| level.chunks.remove(&(cx + dx, cz + dz)).unwrap()).collect();
         let mut r = crate::fluid::Region::new(w, w.materials()?, cx, cz, around);
