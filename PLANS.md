@@ -338,9 +338,11 @@ region files compared block by block).
   The device finds the spawn with the whole block (seed-independent ring offsets from the host,
   least (fitness, index) = Java's first-wins), spawn atoms are widened by SPAWN_SLACK (the exact
   block can be up to ~125 blocks from the chunk centre). Oracle: 1,200 seeds; GPU vs CPU: 4,000.
-- [ ] 3. Material rules (`worldgen/material_rule`, `MaterialRules`): surface, subsurface,
+- [x] 3. Material rules (`worldgen/material_rule`, `MaterialRules`): surface, subsurface,
   terracotta bands, ice, bedrock floor, ore veins (`OreVeinRule`). Chunk block arrays and the
-  four heightmaps after the noise step.
+  worldgen heightmaps after the noise step. Block states are the game's ids (`blocks.rs`, from the
+  data generator's blocks.json; block tags extracted too). Oracle: doFill + buildSurface called by
+  reflection on real ProtoChunks, 240 chunks over 56 biomes, every block and heightmap equal.
 - [ ] 4. Carvers: overworld caves and canyons (with aquifer interaction).
 - [ ] 5. Structure pieces: block placement for every overworld structure (templates, processors,
   jigsaw, Beardifier terrain adaptation). Mineshaft depth becomes exact.

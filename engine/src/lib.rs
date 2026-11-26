@@ -4,6 +4,8 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains, clippy::needless_range_loop, clippy::manual_memcpy)]
 
 pub mod biome;
+pub mod blocks;
+pub mod chunk;
 pub mod crack;
 pub mod density;
 pub mod gpu;

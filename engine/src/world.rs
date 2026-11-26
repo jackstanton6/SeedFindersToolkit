@@ -50,6 +50,13 @@ pub struct World {
     pub spawn_target: Vec<Vec<(usize, i64, i64)>>,
     final_density: Df,
     aquifer_dfs: Option<Vec<Df>>,
+    /// NoiseRouter.chunkSurfaceLevel (MaterialSystem's preliminary surface).
+    pub chunk_surface_level: Option<Df>,
+    pub default_block: String,
+    pub blocks: crate::blocks::Blocks,
+    /// The overworld material rule tree (seed-independent), parsed on first use.
+    pub materials: std::sync::OnceLock<Result<crate::chunk::Materials, String>>,
+    pub material_rule: Value,
     pub biomes: Biomes,
     pub climate: Climate,
     pub structures: crate::structure::Structures,
@@ -84,6 +91,7 @@ impl World {
             _ => None,
         };
         let final_density = parse(&router["final_density"])?;
+        let chunk_surface_level = router.get("chunk_surface_level").map(parse).transpose()?;
         // spawn target functions are the router's climate functions (by reference)
         let mut spawn_target = vec![];
         for point in s["spawn_target"].as_array().into_iter().flatten() {
@@ -124,6 +132,11 @@ impl World {
             climate_dfs,
             spawn_target,
             final_density,
+            chunk_surface_level,
+            default_block: s["default_block"].as_str().unwrap_or("minecraft:stone").to_string(),
+            blocks: crate::blocks::Blocks::load(dir)?,
+            materials: std::sync::OnceLock::new(),
+            material_rule: s["material_rule"].clone(),
             aquifer_dfs,
             biomes,
             climate,
@@ -372,6 +385,54 @@ impl<'w> Seeded<'w> {
             }
         }
         None
+    }
+
+    /// NoiseBasedChunkGenerator.doFill's substances for a chunk (no structures, so no beardifier):
+    /// index ((y - min_y) * 16 + z) * 16 + x. Stone stands for the default block.
+    pub fn noise_chunk(&self, cx: i32, cz: i32) -> Vec<Block> {
+        let (min_y, height, sea) = (self.w.min_y, self.w.height, self.w.sea_level);
+        let t = self.terrain.as_ref().expect("prepare_terrain() first");
+        let vol = Volume::new(16, height, 16, cx * 16, min_y, cz * 16);
+        let mut ctx = Ctx::cached();
+        let mut aq = t.aquifer.as_ref().map(|s| Aquifer::new(s, t.aquifer_random, &vol, sea, &mut ctx));
+        let mut buf = vec![0.0f32; vol.size()];
+        t.final_density.sample_volume(&mut ctx, &mut buf, &vol);
+        let mut out = vec![Block::Air; vol.size()];
+        // doFill's order: z, x, then y from the top
+        for iz in 0..16 {
+            for ix in 0..16 {
+                let (x, z) = (vol.bx(ix), vol.bz(iz));
+                for iy in (0..vol.sy).rev() {
+                    let y = vol.by(iy);
+                    let d = buf[vol.idx(ix, iy, iz)] as f64;
+                    out[((iy * 16 + iz) * 16 + ix) as usize] = match aq.as_mut() {
+                        Some(a) => a.substance(&mut ctx, x, y, z, d),
+                        None => if d > 0.0 { Block::Stone } else { global_fluid(sea, y).at(y) },
+                    };
+                }
+            }
+        }
+        out
+    }
+
+    /// A named density function compiled for this seed (cachingSamplers().get(function)).
+    pub fn sampler(&mut self, name: &str) -> Arc<S> {
+        self.comp.compile_ref(name)
+    }
+
+    /// A density function compiled for this seed.
+    pub fn sampler_of(&mut self, df: &Df) -> Arc<S> {
+        self.comp.compile_root(df)
+    }
+
+    /// RandomState.getOrCreateNoise
+    pub fn noise(&mut self, name: &str) -> Arc<crate::noise::NoiseStack> {
+        self.comp.noise(name)
+    }
+
+    /// RandomState's positional random (Xoroshiro(seed).forkPositional()).
+    pub fn random(&self) -> Positional {
+        self.comp.random
     }
 
     /// ChunkGenerator.getBaseHeight (getFirstFreeHeight; getFirstOccupiedHeight is this - 1).

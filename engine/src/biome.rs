@@ -216,6 +216,10 @@ pub struct Biomes {
     pub names: Vec<String>,
     by_name: HashMap<String, u16>,
     tags: HashMap<String, Vec<Value>>,
+    /// Biome.ClimateSettings per biome: base temperature and whether the modifier is "frozen".
+    pub climate: Vec<(f32, bool)>,
+    /// The biome JSON (generation settings: features, carvers), by id.
+    pub json: Vec<Value>,
 }
 
 /// Bitset over biome ids (fits the ~65 overworld/nether/end biomes).
@@ -236,7 +240,15 @@ impl Biomes {
         for (id, v) in crate::world::json_dir(&tag_dir)? {
             tags.insert(id, v["values"].as_array().cloned().unwrap_or_default());
         }
-        Ok(Biomes { names, by_name, tags })
+        let mut climate = vec![];
+        let mut json = vec![];
+        for n in &names {
+            let path = dir.join(format!("{}.json", n.trim_start_matches("minecraft:")));
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?).map_err(|e| e.to_string())?;
+            climate.push((f32_of(&v["temperature"]), v["temperature_modifier"].as_str() == Some("frozen")));
+            json.push(v);
+        }
+        Ok(Biomes { names, by_name, tags, climate, json })
     }
 
     pub fn id(&self, name: &str) -> Option<u16> {

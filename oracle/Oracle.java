@@ -28,6 +28,103 @@ public class Oracle {
         return b.unwrapKey().orElseThrow().identifier().toString();
     }
 
+    /// Registries as the server loads them (vanilla pack, tags bound): [0] = world, [1] = composite
+    /// RegistryAccess, [2] = resource manager, [3] = layers.
+    static Object[] serverRegistries() throws Exception {
+        var repo = net.minecraft.server.packs.repository.ServerPacksSource.createVanillaTrustedRepository();
+        repo.reload();
+        repo.setSelected(java.util.List.of("vanilla"));
+        var rm = new net.minecraft.server.packs.resources.MultiPackResourceManager(net.minecraft.server.packs.PackType.SERVER_DATA, repo.openAllSelected());
+        var layers = net.minecraft.server.RegistryLayer.createRegistryAccess();
+        var staticTags = net.minecraft.tags.TagLoader.loadTagsForExistingRegistries(rm, layers.getLayer(net.minecraft.server.RegistryLayer.STATIC));
+        var ctx = net.minecraft.tags.TagLoader.buildUpdatedLookups(layers.getAccessForLoading(net.minecraft.server.RegistryLayer.WORLD), staticTags);
+        var world = net.minecraft.resources.RegistryDataLoader.load(rm, ctx, net.minecraft.resources.RegistryDataLoader.WORLD_REGISTRIES, Runnable::run).join();
+        staticTags.forEach(net.minecraft.core.Registry.PendingTags::apply);
+        var access = layers.replaceFrom(net.minecraft.server.RegistryLayer.WORLD, world).compositeAccess();
+        return new Object[]{world, access, rm, layers};
+    }
+
+    /// Chunks after the noise fill and the material rules (NoiseBasedChunkGenerator.doFill and
+    /// buildSurface, called by reflection; no structures, so no beardifier; carvers not run). Chunks
+    /// are picked to cover many surface biomes. Blocks: palette + run-length pairs in y, z, x order.
+    static void surface(StringBuilder sb, long seed, int count) throws Exception {
+        Object[] reg = serverRegistries();
+        var world = (net.minecraft.core.RegistryAccess.Frozen) reg[0];
+        var access = (net.minecraft.core.RegistryAccess) reg[1];
+        Holder<NoiseGeneratorSettings> settings = world.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(NoiseGeneratorSettings.OVERWORLD);
+        RandomState rs = RandomState.create(world.lookupOrThrow(Registries.NOISE), seed, settings.value());
+        MultiNoiseBiomeSource source = MultiNoiseBiomeSource.createFromPreset(
+            world.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST).getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+        NoiseBasedChunkGenerator gen = new NoiseBasedChunkGenerator(source, settings);
+        LevelHeightAccessor level = LevelHeightAccessor.create(-64, 384);
+        var factory = net.minecraft.world.level.chunk.PalettedContainerFactory.create(access);
+        var fluidField = NoiseBasedChunkGenerator.class.getDeclaredField("globalFluidPicker");
+        fluidField.setAccessible(true);
+        var fluidPicker = (net.minecraft.world.level.levelgen.Aquifer.FluidPicker) ((java.util.function.Supplier<?>) fluidField.get(gen)).get();
+        var doFill = NoiseBasedChunkGenerator.class.getDeclaredMethod("doFill", net.minecraft.world.level.levelgen.NoiseChunk.class, net.minecraft.world.level.chunk.ChunkAccess.class);
+        doFill.setAccessible(true);
+        var buildSurface = NoiseBasedChunkGenerator.class.getDeclaredMethod("buildSurface", net.minecraft.world.level.chunk.ChunkAccess.class,
+            net.minecraft.world.level.levelgen.NoiseChunk.class, RandomState.class, BiomeManager.class, java.util.Set.class,
+            net.minecraft.world.level.levelgen.material.rule.MaterialRule.class);
+        buildSurface.setAccessible(true);
+        // stored chunk biomes for the zoom, as in blockbiomes
+        java.util.Map<Long, BiomeResolver> chunks = new java.util.HashMap<>();
+        BiomeResolver stored = (qx, qy, qz) -> chunks.computeIfAbsent(((long) (qx >> 2) << 32) ^ ((qz >> 2) & 0xFFFFFFFFL),
+            k -> source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), (qx >> 2) * 4, -16, (qz >> 2) * 4, 4, 96, 4))
+            .getNoiseBiome(qx, Math.max(-16, Math.min(79, qy)), qz);
+        BiomeManager manager = new BiomeManager(stored, BiomeManager.obfuscateSeed(seed));
+        BiomeResolver point = source.createResolver(rs.createClimateSampler(SamplerContext.EMPTY_UNCACHED));
+        Random rand = new Random(seed ^ 0x5EED);
+        java.util.Map<String, Integer> seen = new java.util.HashMap<>();
+        sb.append(",\"chunks\":[");
+        int done = 0;
+        for (int tries = 0; done < count && tries < 400000; tries++) {
+            int range = tries % 3 == 0 ? 200_000 : 8_000;
+            int cx = rand.nextInt(range) - range / 2, cz = rand.nextInt(range) - range / 2;
+            // surface biome, or every few tries a cave biome (y -40 or 0)
+            int qy = tries % 5 == 0 ? -10 : tries % 5 == 1 ? 0 : 16;
+            String b = key(point.getNoiseBiome(cx * 4 + 2, qy, cz * 4 + 2));
+            if (seen.getOrDefault(b, 0) >= 1 && tries < 390000) continue;  // one chunk per biome first
+            seen.merge(b, 1, Integer::sum);
+            var pos = new net.minecraft.world.level.ChunkPos(cx, cz);
+            var chunk = new net.minecraft.world.level.chunk.ProtoChunk(pos, net.minecraft.world.level.chunk.UpgradeData.EMPTY, level, factory, null);
+            chunk.fillBiomesFromNoise(source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), cx * 4, -16, cz * 4, 4, 96, 4));
+            var volume = new net.minecraft.world.level.levelgen.densityfunction.DensityVolume(16, 384, 16, cx * 16, -64, cz * 16);
+            try (var noise = new net.minecraft.world.level.levelgen.NoiseChunk(rs, null, settings.value(), fluidPicker,
+                    net.minecraft.world.level.levelgen.blending.Blender.empty(), volume)) {
+                doFill.invoke(gen, noise, chunk);
+                buildSurface.invoke(gen, chunk, noise, rs, manager, source.possibleBiomes(), settings.value().materialRule().value());
+            }
+            if (done++ > 0) sb.append(',');
+            sb.append("{\"x\":").append(cx).append(",\"z\":").append(cz).append(",\"biome\":\"").append(b).append("\",\"palette\":[");
+            java.util.Map<net.minecraft.world.level.block.state.BlockState, Integer> pal = new java.util.LinkedHashMap<>();
+            StringBuilder runs = new StringBuilder();
+            int last = -1, run = 0;
+            var mp = new net.minecraft.core.BlockPos.MutableBlockPos();
+            for (int y = -64; y < 320; y++) for (int z = 0; z < 16; z++) for (int x = 0; x < 16; x++) {
+                var st = chunk.getBlockState(mp.set(cx * 16 + x, y, cz * 16 + z));
+                int id = pal.computeIfAbsent(st, k -> pal.size());
+                if (id == last) { run++; continue; }
+                if (run > 0) runs.append(runs.length() > 0 ? "," : "").append(last).append(',').append(run);
+                last = id;
+                run = 1;
+            }
+            runs.append(runs.length() > 0 ? "," : "").append(last).append(',').append(run);
+            boolean f = true;
+            for (var st : pal.keySet()) {
+                sb.append(f ? "" : ",").append('"').append(net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(st)).append('"');
+                f = false;
+            }
+            sb.append("],\"runs\":[").append(runs).append("],\"heights\":[");
+            for (int i = 0; i < 256; i++) {
+                sb.append(i > 0 ? "," : "").append(chunk.getHeight(Heightmap.Types.WORLD_SURFACE_WG, i & 15, i >> 4))
+                    .append(',').append(chunk.getHeight(Heightmap.Types.OCEAN_FLOOR_WG, i & 15, i >> 4));
+            }
+            sb.append("]}");
+        }
+        sb.append(']');
+    }
+
     /// Every structure start in chunks [-radius, radius]^2, decided like ChunkGenerator.createStructures.
     /// Registries are loaded from the vanilla pack the way WorldLoader does, so template pools,
     /// structure templates and block tags are all real.
@@ -240,6 +337,8 @@ public class Oracle {
                     .append(floor).append(']');
             }
             sb.append(']');
+        } else if (mode.equals("surface")) {
+            surface(sb, seed, count);
         } else if (mode.equals("structures")) {
             structures(sb, seed, count);
         } else {

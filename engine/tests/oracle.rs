@@ -128,6 +128,70 @@ fn spawn_matches() {
     assert_eq!(bad, 0, "{bad}/{n} spawn mismatches");
 }
 
+/// "minecraft:x[b=1,a=2]" with its properties sorted, so both serialisations compare equal.
+fn norm_state(s: &str) -> String {
+    match s.split_once('[') {
+        Some((n, p)) => {
+            let mut v: Vec<&str> = p.trim_end_matches(']').split(',').collect();
+            v.sort();
+            format!("{n}[{}]", v.join(","))
+        }
+        None => s.to_string(),
+    }
+}
+
+#[test]
+#[ignore]
+fn surface_chunks_match() {
+    use sft_engine::chunk::{Chunks, OCEAN_FLOOR_WG, WORLD_SURFACE_WG};
+    use std::collections::BTreeMap;
+    let w = world();
+    let (mut bad, mut bad_h, mut total) = (0usize, 0usize, 0usize);
+    let mut kinds: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+    for f in fixtures("surface") {
+        let seed = f["seed"].as_i64().unwrap();
+        let mut ch = Chunks::new(w, seed);
+        for c in f["chunks"].as_array().unwrap() {
+            let (cx, cz) = (c["x"].as_i64().unwrap() as i32, c["z"].as_i64().unwrap() as i32);
+            let pal: Vec<String> = c["palette"].as_array().unwrap().iter().map(|p| norm_state(p.as_str().unwrap())).collect();
+            let runs = c["runs"].as_array().unwrap();
+            let mut want = vec![];
+            for r in runs.chunks(2) {
+                want.extend(std::iter::repeat_n(r[0].as_u64().unwrap() as usize, r[1].as_u64().unwrap() as usize));
+            }
+            let got = ch.terrain(cx, cz).unwrap();
+            for (i, &p) in want.iter().enumerate() {
+                let g = norm_state(&w.blocks.to_string(got.blocks[i]));
+                if g != pal[p] {
+                    let y = (i / 256) as i32 + w.min_y;
+                    let band = if y < 0 { "y<0" } else if y < 63 { "0..63" } else { "63+" };
+                    *kinds.entry((pal[p].clone(), g, format!("{} {band}", c["biome"].as_str().unwrap()))).or_default() += 1;
+                    bad += 1;
+                }
+                total += 1;
+            }
+            let h = c["heights"].as_array().unwrap();
+            for k in 0..256 {
+                let (x, z) = ((k & 15) as i32, (k >> 4) as i32);
+                let (gw, go) = (got.height(WORLD_SURFACE_WG, x, z), got.height(OCEAN_FLOOR_WG, x, z));
+                let (ww, wo) = (h[2 * k].as_i64().unwrap() as i32, h[2 * k + 1].as_i64().unwrap() as i32);
+                if (gw, go) != (ww, wo) {
+                    if bad_h < 5 {
+                        eprintln!("chunk ({cx},{cz}) column ({x},{z}): heights got {gw},{go} want {ww},{wo}");
+                    }
+                    bad_h += 1;
+                }
+            }
+        }
+    }
+    let mut v: Vec<_> = kinds.into_iter().collect();
+    v.sort_by_key(|x| std::cmp::Reverse(x.1));
+    for ((want, got, wh), n) in v.iter().take(40) {
+        eprintln!("{n:8} want {want} got {got} ({wh})");
+    }
+    assert_eq!((bad, bad_h), (0, 0), "{bad}/{total} blocks, {bad_h} heightmap columns differ");
+}
+
 #[test]
 #[ignore]
 fn structures_match() {

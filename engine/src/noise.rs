@@ -300,3 +300,82 @@ pub fn blended_fbm_range(first_octave: i32, smear_y: f64, mut value_factor: f64)
     }
     hi
 }
+
+// ------------------------------------------------------------------------------------------------
+// SimplexNoise (biome temperature noises)
+// ------------------------------------------------------------------------------------------------
+
+pub struct Simplex {
+    perm: [u8; 256],
+    ox: f64,
+    oy: f64,
+}
+
+/// SimplexNoise: GradientNoise's offsets (scaled by 0 when the offset is discarded, still drawn)
+/// and permutation.
+impl Simplex {
+    pub fn new(r: &mut impl Rng, discard_offset: bool) -> Self {
+        let scale = if discard_offset { 0.0 } else { 256.0 };
+        let ox = r.next_double() * scale;
+        let oy = r.next_double() * scale;
+        let _oz = r.next_double() * scale;
+        let mut perm = [0u8; 256];
+        for (i, p) in perm.iter_mut().enumerate() {
+            *p = i as u8;
+        }
+        for i in 0..256 {
+            let j = r.next_bound(256 - i as i32) as usize + i;
+            perm.swap(i, j);
+        }
+        Simplex { perm, ox, oy }
+    }
+
+    fn p(&self, i: i32) -> i32 {
+        self.perm[(i & 0xFF) as usize] as i32
+    }
+
+    fn corner(index: i32, x: f64, y: f64, base: f64) -> f64 {
+        let mut t0 = base - x * x - y * y - 0.0 * 0.0;
+        if t0 < 0.0 {
+            0.0
+        } else {
+            t0 *= t0;
+            let g = GRADIENT[index as usize];
+            t0 * t0 * (g[0] as f64 * x + g[1] as f64 * y + g[2] as f64 * 0.0)
+        }
+    }
+
+    /// SimplexNoise.get(x, y)
+    pub fn get2(&self, x: f64, y: f64) -> f32 {
+        let sqrt3 = 3.0f64.sqrt();
+        let (f2, g2) = (0.5 * (sqrt3 - 1.0), (3.0 - sqrt3) / 6.0);
+        let (xin, yin) = (x + self.ox, y + self.oy);
+        let s = (xin + yin) * f2;
+        let i = (xin + s).floor() as i32;
+        let j = (yin + s).floor() as i32;
+        let t = (i + j) as f64 * g2;
+        let (x0, y0) = (xin - (i as f64 - t), yin - (j as f64 - t));
+        let (i1, j1) = if x0 > y0 { (1, 0) } else { (0, 1) };
+        let (x1, y1) = (x0 - i1 as f64 + g2, y0 - j1 as f64 + g2);
+        let (x2, y2) = (x0 - 1.0 + 2.0 * g2, y0 - 1.0 + 2.0 * g2);
+        let (ii, jj) = (i & 0xFF, j & 0xFF);
+        let gi0 = self.p(ii + self.p(jj)) % 12;
+        let gi1 = self.p(ii + i1 + self.p(jj + j1)) % 12;
+        let gi2 = self.p(ii + 1 + self.p(jj + 1)) % 12;
+        let n = Self::corner(gi0, x0, y0, 0.5) + Self::corner(gi1, x1, y1, 0.5) + Self::corner(gi2, x2, y2, 0.5);
+        (70.0 * n) as f32
+    }
+}
+
+/// A NoiseStack of simplex layers (frequency, amplitude), 2D.
+pub struct SimplexStack(pub Vec<(Simplex, f64, f32)>);
+
+impl SimplexStack {
+    pub fn get2(&self, x: f64, y: f64) -> f32 {
+        let mut v = 0.0f32;
+        for (n, freq, amp) in &self.0 {
+            v += amp * n.get2(x * freq, y * freq);
+        }
+        v
+    }
+}

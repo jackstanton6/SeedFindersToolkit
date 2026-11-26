@@ -13,6 +13,7 @@ the way the server loads them), dumps ground truth for random positions and seed
 | chunk biomes via volume resolver (what chunks store) | 80 chunk columns × 1,536 quarts | 0 mismatches |
 | block-level (F3) biomes, `BiomeManager` zoom over stored chunk biomes | 80,000 blocks | 0 mismatches |
 | spawn search (`NoiseSpawnFinder`, `getOrigin`): position and chunk | 1,200 seeds | 0 mismatches |
+| chunk blocks after the noise fill and the material rules (surface blocks, terracotta bands, ice, bedrock, ore veins) and both worldgen heightmaps | 240 chunks (56 biomes) × 98,304 blocks | 0 mismatches |
 | `WORLD_SURFACE_WG` and `OCEAN_FLOOR_WG` heights (incl. aquifers) | 1,600 columns × 2 | 0 mismatches |
 | structure starts in a 97×97-chunk window: every set, placement chunk, chosen variant, start position | ~1,100 rows | 0 mismatches (mineshafts excluded, see below) |
 | stronghold ring positions | 128 per seed | 0 mismatches |

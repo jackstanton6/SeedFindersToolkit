@@ -40,7 +40,8 @@ def home(repo: Path = Path(__file__).resolve().parent.parent) -> Path:
 ROOT = home()
 MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 KEEP = ("data/minecraft/worldgen/", "data/minecraft/tags/worldgen/", "data/minecraft/structure/", "data/minecraft/loot_table/",
-        "data/minecraft/enchantment/", "data/minecraft/tags/item/", "data/minecraft/tags/enchantment/", "data/minecraft/tags/instrument/")
+        "data/minecraft/enchantment/", "data/minecraft/tags/item/", "data/minecraft/tags/enchantment/", "data/minecraft/tags/instrument/",
+        "data/minecraft/tags/block/", "data/minecraft/tags/fluid/")
 
 
 def data_dir(version: str) -> Path:
@@ -91,6 +92,7 @@ def extract(version: str, server_jar: Path) -> None:
     if gen.returncode:
         raise RuntimeError(f"the data generator failed (java exit {gen.returncode}):\n{(gen.stderr or gen.stdout)[-2000:]}")
     shutil.copytree(work / "generated/reports/biome_parameters", out / "reports/biome_parameters", dirs_exist_ok=True)
+    shutil.copy(work / "generated/reports/blocks.json", out / "reports/blocks.json")  # block states, ids, defaults
     write_items(work / "generated/reports/minecraft/components/item", out / "items.json")
     (out / "version.txt").write_text(version)
 
