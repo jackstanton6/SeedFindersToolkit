@@ -192,7 +192,8 @@ class MapView(QWidget):
             x, z = self.to_world(pos)
             _, _, w, h = self.grid
             i, j = pos.x() * w // max(self.width(), 1), pos.y() * h // max(self.height(), 1)
-            biome = self.names[self.ids[j * w + i]].split(":")[-1] if 0 <= i < w and 0 <= j < h else "?"
+            # the block-level (F3) biome at the hovered block, not the map cell's
+            biome = self.names[self.world.block_biome(self.seed, x, self.y, z)].split(":")[-1]
             near = [m for m in self.markers if (self.to_screen(m[1], m[3]) - pos).manhattanLength() < 12]
             extra = "  |  " + ", ".join(f"{m[0].split(':')[-1]} ({m[1]}, {m[2]}, {m[3]})" for m in near) if near else ""
             self.hovered.emit(f"x {x}  z {z}  y {self.y}  {biome}{extra}")

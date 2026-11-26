@@ -144,13 +144,20 @@ All biome conditions sample biomes on a `step`-block grid at height `y`. Biomes 
 biomes need a low `y`. Cost grows with (radius / step)²; use a bigger `step` for large areas.
 `name` is a biome, a list of biomes, or a `#tag` (`"#is_ocean"`, `"#is_jungle"`, ...).
 
-### biome(name, within=0, at=(0,0), y=64, step=16, fraction=0)
+### biome(name, within=0, at=(0,0), y=64, step=16, fraction=0, exact=within==0)
 
 The fraction of samples in the disc that match. With `fraction=0` one matching sample is enough.
+
+`exact=True` samples block-level biomes, the ones F3 shows: the game blurs the 4×4×4 biome cells
+with a seeded jitter, so a block near a biome edge can belong to the neighbouring cell. A single
+point (`within=0`) is exact by default; areas default to the cell biomes (faster, and what
+structures check). Exact checks run on the CPU even when the GPU is on.
 
 ```python
 biome("lush_caves", within=200, y=-20)
 biome("cherry_grove", within=300, fraction=0.25)
+biome("mushroom_fields", at=(100, -40))               # the F3 biome at that block
+biome("jungle", within=64, exact=True)
 ```
 
 ### biome_area(name, within=0, window=512, at=(0,0), y=64, step=16)

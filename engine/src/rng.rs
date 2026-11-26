@@ -2,6 +2,7 @@
 //! XoroshiroRandomSource, LegacyRandomSource/WorldgenRandom, *PositionalRandomFactory).
 
 use md5::{Digest, Md5};
+use sha2::Sha256;
 
 pub const GOLDEN_RATIO_64: u64 = 0x9E37_79B9_7F4A_7C15;
 pub const SILVER_RATIO_64: u64 = 0x6A09_E667_F3BC_C909;
@@ -32,6 +33,18 @@ pub fn pos_seed(x: i32, y: i32, z: i32) -> i64 {
     let mut s = (x.wrapping_mul(3129871) as i64) ^ (z as i64).wrapping_mul(116129781) ^ y as i64;
     s = s.wrapping_mul(s).wrapping_mul(42317861).wrapping_add(s.wrapping_mul(11));
     s >> 16
+}
+
+/// BiomeManager.obfuscateSeed: Guava's sha256().hashLong (little-endian bytes in) and asLong
+/// (first eight bytes, little-endian).
+pub fn obfuscate_seed(seed: i64) -> i64 {
+    let h = Sha256::digest(seed.to_le_bytes());
+    i64::from_le_bytes(h[0..8].try_into().unwrap())
+}
+
+/// LinearCongruentialGenerator.next
+pub fn lcg_next(rval: i64, c: i64) -> i64 {
+    rval.wrapping_mul(rval.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)).wrapping_add(c)
 }
 
 /// java.lang.String.hashCode for ASCII/BMP identifiers.

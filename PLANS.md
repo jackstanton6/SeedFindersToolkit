@@ -317,3 +317,42 @@ Done:
 
 Possible next steps: biomes for structure-seed mode (a stage that checks each survivor's 65,536
 sisters on the GPU), jigsaw start columns (needs the start-piece choice), `biome_area`/`island` grids.
+
+## M2 batch: spawn, block biomes, materials, full chunks (requested 2026-11-26)
+
+Scope (agreed with the project owner): all of M2, made exact. That pulls in full overworld chunk
+generation: carvers (from M4), structure pieces and all overworld features (from M3). Work on
+master, one oracle-verified commit per item, in this order. Ground truth both ways: an
+`Oracle.java` dump mode per ported class, and real dedicated-server worlds (`level.dat` spawn,
+region files compared block by block).
+
+- [x] 1. Block-level biomes (`BiomeManager`: SHA-256 seed, jittered zoom over the stored chunk
+  biomes, y clamped). `biome(..., exact=)`; single-point checks default to block level (noted in
+  Versions.md, `exact=False` opts out); area metrics stay cell-based; exact checks stay on the CPU.
+  The map hover shows the F3 biome; `World.block_biome`. Oracle: 80,000 blocks, 0 mismatches. A
+  climate tie showed that the game samples a chunk's climate up front but searches the R-tree per
+  lookup (thread-wide warm start); the engine now does the same.
+- [ ] 2. Spawn chunk (`NoiseSpawnFinder`, `getOrigin`), CPU and GPU (stage 2), so `at="spawn"`
+  anchors lower to the device; `spawn_distance`; spawn biome/height presets and wizard goals.
+- [ ] 3. Material rules (`worldgen/material_rule`, `MaterialRules`): surface, subsurface,
+  terracotta bands, ice, bedrock floor, ore veins (`OreVeinRule`). Chunk block arrays and the
+  four heightmaps after the noise step.
+- [ ] 4. Carvers: overworld caves and canyons (with aquifer interaction).
+- [ ] 5. Structure pieces: block placement for every overworld structure (templates, processors,
+  jigsaw, Beardifier terrain adaptation). Mineshaft depth becomes exact.
+- [ ] 6. Features: every overworld placed feature in decoration order (decoration seed per step),
+  incl. trees, plants, ores, lakes, geodes, freeze_top_layer (snow, ice).
+- [ ] 7. Exact spawn block: setInitialSpawn's 11x11 chunk spiral over `getSpawnPosInChunk` on full
+  chunks (structures and features included).
+- [ ] 8. Conditions: `block(name, at, within, depth="surface"|"subsurface"|y=(lo, hi))` over full
+  chunks; `spawn_block(name)`; `ore_vein(type, at, within)` (vein size, raw ore blocks; record
+  hunts); scattered ores via `block(...)`. Presets: red sand desert, ice spikes, terracotta at spawn.
+- [ ] 9. Cost: per-seed, per-thread chunk cache shared by all block conditions and spawn; each
+  query generates only up to the last step that can change its blocks (same results).
+- [ ] 10. Bedrock cracking: a bedrock-pattern observation that picks the right sister of a cracked
+  structure seed (CPU and GPU). Plus a time-boxed study of a bedrock-only attack, written up here.
+- [ ] 11. GUI: spawn marker, surface block map layer, ore vein overlay (chosen y), chunk inspector
+  (vertical slice / y-level view).
+- [ ] 12. API: `World.spawn`, `World.block`, `World.chunk`; CLI `spawn SEED` and `chunk SEED X Z`;
+  export a generated area as `.mca` (+ minimal level.dat) and Sponge `.schem`.
+- [ ] 13. Docs: Query-Language, Accuracy (ceilings removed), Versions, GUI, AGENTS milestones.

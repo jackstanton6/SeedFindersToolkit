@@ -35,8 +35,8 @@ SPECS = {
                 {"within": 1000, "at": SPAWN, "margin": 0, "min": 1}, "Structures whose boxes intersect, like a temple inside a village."),
     "bingo": ("structures", "many structure types", "at least {min} different structure types within {within} blocks of {at}", ["names", "max"],
               {"within": 2000, "at": SPAWN}, "How many kinds of structure have a start nearby."),
-    "biome": ("biomes", "biome near a point", "biome {name} within {within} blocks of {at}", ["fraction", "y", "step"],
-              {"within": 0, "at": SPAWN, "y": 64, "step": 16, "fraction": 0}, "A biome somewhere in the circle; 'fraction' asks for that share of it."),
+    "biome": ("biomes", "biome near a point", "biome {name} within {within} blocks of {at}", ["fraction", "y", "step", "exact"],
+              {"within": 0, "at": SPAWN, "y": 64, "step": 16, "fraction": 0}, "A biome somewhere in the circle; 'fraction' asks for that share of it. 'exact' uses block-level (F3) biomes; on by default when within is 0."),
     "biome_area": ("biomes", "large biome area", "a {name} area of at least {min} blocks² touching the {within}-block circle around {at}", ["window", "y", "step", "max"],
                    {"within": 0, "window": 512, "at": SPAWN, "y": 64, "step": 16, "min": 1}, "The largest connected patch of a biome."),
     "biome_count": ("biomes", "many biomes", "at least {min} different biomes within {within} blocks of {at}", ["among", "y", "step", "max"],
@@ -354,8 +354,9 @@ def make_field(editor, op: str, key: str, value, default) -> Field:
         f = Field(box, lambda: [xs.value(), zs.value()], xs.valueChanged)
         zs.valueChanged.connect(lambda *_: f.changed())
         return f
-    if isinstance(default, bool) or isinstance(value, bool) or key in ("afk", "total", "lagoon"):
-        w = QCheckBox(checked=bool(value if value is not None else default))
+    if isinstance(default, bool) or isinstance(value, bool) or key in ("afk", "total", "lagoon", "exact"):
+        # adding the optional 'exact' field means asking for block-level biomes
+        w = QCheckBox(checked=bool(value if value is not None else default if default is not None else key == "exact"))
         return Field(w, w.isChecked, w.toggled)
     if key in INT_KEYS and (value is None or isinstance(value, int)):
         w = QSpinBox(minimum=-30_000_000 if key == "y" else 0, maximum=30_000_000, singleStep=16 if key in ("within", "dist", "radius", "window") else 1,

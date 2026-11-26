@@ -28,3 +28,9 @@ compiled density functions), the port must follow.
 
 Older versions (1.18 to 1.21) use double-precision noise and the pre-26 density functions. Supporting
 them means bringing back those code paths behind a version switch, verified the same way.
+
+## Query behaviour changes
+
+- **Block-level biomes (M2).** `biome(...)` at a single point (`within=0`) now checks the block-level
+  biome F3 shows instead of the 4×4×4 cell biome. Saved queries with point checks can match slightly
+  different seeds near biome edges. `exact=False` restores the old behaviour.

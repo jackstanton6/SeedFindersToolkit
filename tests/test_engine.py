@@ -203,6 +203,17 @@ def test_gpu_biome_checks_find_the_same_seeds():
     assert "with biomes" not in note, note  # structure seeds are not whole seeds: biomes stay on the CPU
 
 
+def test_point_biome_checks_are_block_level():
+    # find a block whose F3 biome differs from its 4x4x4 cell biome (near a biome edge)
+    names = w.biomes()
+    cells = w.biome_map(SEED, 0, 0, 256, 1, 1, 64)
+    x = next(x for x in range(256) if w.block_biome(SEED, x, 64, 0) != cells[x])
+    block, cell = names[w.block_biome(SEED, x, 64, 0)], names[cells[x]]
+    assert check(f"biome('{block}', at=({x}, 0))") is not None
+    assert check(f"biome('{cell}', at=({x}, 0))") is None
+    assert check(f"biome('{cell}', at=({x}, 0), exact=False)") is not None
+
+
 def test_cli_edge_cases():
     import subprocess
     import tempfile
@@ -226,5 +237,6 @@ if __name__ == "__main__":
     test_check_and_scan_run_plugins_like_a_search()
     test_two_islands_keep_their_own_details()
     test_gpu_biome_checks_find_the_same_seeds()
+    test_point_biome_checks_are_block_level()
     test_cli_edge_cases()
     print("ok")

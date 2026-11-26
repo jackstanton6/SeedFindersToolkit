@@ -4,7 +4,7 @@
 use crate::biome::{quantize, Biomes, Climate};
 use crate::density::{parse, Caches, Compiler, Ctx, Df, Volume, S};
 use crate::noise::NormalNoise;
-use crate::rng::{JavaRandom, Positional, Xoroshiro};
+use crate::rng::{lcg_next, obfuscate_seed, JavaRandom, Positional, Xoroshiro};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -157,11 +157,17 @@ impl Heightmap {
 pub struct BiomeCtx {
     pub ctx: Ctx,
     pub last: Option<usize>,
+    /// Climate targets of chunks (volume path), for block-level lookups.
+    pub chunks: HashMap<(i32, i32), Vec<[i64; 7]>>,
 }
 
 impl BiomeCtx {
     pub fn cached() -> Self {
-        BiomeCtx { ctx: Ctx::cached(), last: None }
+        BiomeCtx { ctx: Ctx::cached(), last: None, chunks: HashMap::new() }
+    }
+
+    pub fn uncached() -> Self {
+        BiomeCtx { ctx: Ctx::uncached(), last: None, chunks: HashMap::new() }
     }
 }
 
@@ -217,6 +223,13 @@ impl<'w> Seeded<'w> {
     /// volume's (y fastest, then x, then z).
     #[allow(clippy::too_many_arguments)]
     pub fn biomes_volume(&self, bc: &mut BiomeCtx, qx: i32, qy: i32, qz: i32, sx: i32, sy: i32, sz: i32) -> Vec<u16> {
+        let targets = self.climate_volume(bc, qx, qy, qz, sx, sy, sz);
+        targets.iter().map(|t| self.w.climate.search(t, &mut bc.last)).collect()
+    }
+
+    /// The climate targets of a volume path region (what createResolverForChunk samples eagerly).
+    #[allow(clippy::too_many_arguments)]
+    fn climate_volume(&self, bc: &mut BiomeCtx, qx: i32, qy: i32, qz: i32, sx: i32, sy: i32, sz: i32) -> Vec<[i64; 7]> {
         let vol = Volume::stepped(sx, sy, sz, qx << 2, qy << 2, qz << 2, 4, 4, 4);
         let bufs: Vec<Vec<f32>> = self
             .climate
@@ -227,12 +240,45 @@ impl<'w> Seeded<'w> {
                 b
             })
             .collect();
-        (0..vol.size())
-            .map(|i| {
-                let t = std::array::from_fn(|k| if k < 6 { quantize(bufs[k][i]) } else { 0 });
-                self.w.climate.search(&t, &mut bc.last)
-            })
-            .collect()
+        (0..vol.size()).map(|i| std::array::from_fn(|k| if k < 6 { quantize(bufs[k][i]) } else { 0 })).collect()
+    }
+
+    /// The biome a chunk stores at a quart (ChunkAccess.getNoiseBiome: y clamped to the world).
+    /// Each chunk's 4x96x4 climate volume is sampled once with its own cached context; the R-tree
+    /// search runs per lookup, as in createResolverForChunk.
+    pub fn chunk_biome(&self, bc: &mut BiomeCtx, qx: i32, qy: i32, qz: i32) -> u16 {
+        let (cx, cz) = (qx >> 2, qz >> 2);
+        let t = bc.chunks.entry((cx, cz)).or_insert_with(|| self.climate_volume(&mut BiomeCtx::cached(), cx * 4, -16, cz * 4, 4, 96, 4));
+        // volume order: y fastest, then x, then z
+        let t = t[(((qz & 3) * 4 + (qx & 3)) * 96 + (qy.clamp(-16, 79) + 16)) as usize];
+        // ponytail: the R-tree warm start is thread-wide in the game, so where two biomes tie (rare)
+        // the stored biome depends on generation order; we follow this context's lookup order.
+        self.w.climate.search(&t, &mut bc.last)
+    }
+
+    /// BiomeManager.getBiome: the block-level (F3) biome, zoomed from the stored chunk biomes with
+    /// the obfuscated seed.
+    pub fn block_biome(&self, bc: &mut BiomeCtx, x: i32, y: i32, z: i32) -> u16 {
+        let zoom = obfuscate_seed(self.seed);
+        let (ax, ay, az) = (x - 2, y - 2, z - 2);
+        let (px, py, pz) = (ax >> 2, ay >> 2, az >> 2);
+        let (fx, fy, fz) = ((ax & 3) as f64 / 4.0, (ay & 3) as f64 / 4.0, (az & 3) as f64 / 4.0);
+        let mut min_i = 0;
+        let mut min_d = f64::INFINITY;
+        for i in 0..8 {
+            let (xe, ye, ze) = (i & 4 == 0, i & 2 == 0, i & 1 == 0);
+            let (cx, cy, cz) = (if xe { px } else { px + 1 }, if ye { py } else { py + 1 }, if ze { pz } else { pz + 1 });
+            let (dx, dy, dz) = (if xe { fx } else { fx - 1.0 }, if ye { fy } else { fy - 1.0 }, if ze { fz } else { fz - 1.0 });
+            let d = fiddled_distance(zoom, cx, cy, cz, dx, dy, dz);
+            if min_d > d {
+                min_i = i;
+                min_d = d;
+            }
+        }
+        let bx = if min_i & 4 == 0 { px } else { px + 1 };
+        let by = if min_i & 2 == 0 { py } else { py + 1 };
+        let bz = if min_i & 1 == 0 { pz } else { pz + 1 };
+        self.chunk_biome(bc, bx, by, bz)
     }
 
     /// Compiles the terrain samplers (final density + aquifer) once; afterwards height queries
@@ -585,4 +631,23 @@ impl<'a> Aquifer<'a> {
         }
         global.ty
     }
+}
+
+/// BiomeManager.getFiddledDistance
+fn fiddled_distance(seed: i64, x: i32, y: i32, z: i32, dx: f64, dy: f64, dz: f64) -> f64 {
+    let mut r = seed;
+    for c in [x, y, z, x, y, z] {
+        r = lcg_next(r, c as i64);
+    }
+    let fx = fiddle(r);
+    r = lcg_next(r, seed);
+    let fy = fiddle(r);
+    r = lcg_next(r, seed);
+    let fz = fiddle(r);
+    (dz + fz) * (dz + fz) + (dy + fy) * (dy + fy) + (dx + fx) * (dx + fx)
+}
+
+/// BiomeManager.getFiddle
+fn fiddle(r: i64) -> f64 {
+    ((r >> 24).rem_euclid(1024) as f64 / 1024.0 - 0.5) * 0.9
 }

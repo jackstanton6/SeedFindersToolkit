@@ -11,6 +11,7 @@ import net.minecraft.data.registries.VanillaRegistries;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.biome.BiomeResolver;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists;
@@ -176,6 +177,24 @@ public class Oracle {
                     sb.append('"').append(key(res.getNoiseBiome(cx * 4 + qx, qy - 16, cz * 4 + qz))).append('"');
                 }
                 sb.append("]]");
+            }
+            sb.append(']');
+        } else if (mode.equals("blockbiomes")) {
+            // BiomeManager.getBiome over what chunks store (createResolverForChunk, y clamped as in
+            // ChunkAccess.getNoiseBiome), seeded like the server: obfuscateSeed(seed)
+            java.util.Map<Long, BiomeResolver> chunks = new java.util.HashMap<>();
+            BiomeResolver stored = (qx, qy, qz) -> chunks.computeIfAbsent(((long) (qx >> 2) << 32) ^ ((qz >> 2) & 0xFFFFFFFFL),
+                k -> source.createResolverForChunk(rs.createClimateSampler(SamplerContext.builder().enableCaches().build()), (qx >> 2) * 4, -16, (qz >> 2) * 4, 4, 96, 4))
+                .getNoiseBiome(qx, Math.max(-16, Math.min(79, qy)), qz);
+            BiomeManager manager = new BiomeManager(stored, BiomeManager.obfuscateSeed(seed));
+            sb.append(",\"points\":[");
+            for (int i = 0; i < count; i++) {
+                // mostly near spawn, some far out; y over the whole world and past it (clamped)
+                int range = i % 8 == 0 ? 2_000_000 : 4_000;
+                int x = rand.nextInt(range) - range / 2, z = rand.nextInt(range) - range / 2, y = rand.nextInt(400) - 72;
+                if (i > 0) sb.append(',');
+                sb.append('[').append(x).append(',').append(y).append(',').append(z)
+                    .append(",\"").append(key(manager.getBiome(x, y, z))).append("\"]");
             }
             sb.append(']');
         } else if (mode.equals("slime")) {

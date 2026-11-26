@@ -11,6 +11,7 @@ the way the server loads them), dumps ground truth for random positions and seed
 | six climate parameters, bit-for-bit (float bits) | 12,000 points | 0 mismatches |
 | biome via point resolver (structure checks) | 12,000 points | 0 mismatches |
 | chunk biomes via volume resolver (what chunks store) | 80 chunk columns × 1,536 quarts | 0 mismatches |
+| block-level (F3) biomes, `BiomeManager` zoom over stored chunk biomes | 80,000 blocks | 0 mismatches |
 | `WORLD_SURFACE_WG` and `OCEAN_FLOOR_WG` heights (incl. aquifers) | 1,600 columns × 2 | 0 mismatches |
 | structure starts in a 97×97-chunk window: every set, placement chunk, chosen variant, start position | ~1,100 rows | 0 mismatches (mineshafts excluded, see below) |
 | stronghold ring positions | 128 per seed | 0 mismatches |
@@ -30,7 +31,7 @@ generates the area around the structures the engine predicts and reads every uno
 Run it yourself (needs Java and `python -m sft data 26.3`):
 
 ```sh
-python tests/run_oracle.py 26.3                 # climate, chunk biomes, heights
+python tests/run_oracle.py 26.3                 # climate, chunk and block biomes, heights
 python tests/run_oracle.py 26.3 structures slime
 python tests/loot_oracle.py fill                # dedicated server, EULA
 python tests/loot_oracle.py world 0 12345 35467 59104
@@ -46,7 +47,10 @@ cd engine && cargo test --release -- --ignored
 - **R-tree tie-breaking.** The game warm-starts each biome search from the previous result of the
   same thread, which only matters when two biome entries are at exactly the same distance. The
   engine keeps a warm start per evaluation context, so exact ties could in theory resolve
-  differently. None appeared in the samples above.
+  differently. One appeared in the block-biome samples (1 in 80,000), and it matched once lookups
+  followed the game's order (the chunk's climate is sampled up front, each biome is searched when
+  asked for). In a real world the stored biome depends on which chunks that thread generated
+  before, so such a tie can't be predicted from the seed alone.
 - **Beached shipwreck chests.** A beached wreck that fits a worldgen region rolls its height in
   whichever chunk the game happens to generate first, which shifts the loot seeds of chests in that
   chunk. These chests are flagged `exact: false` (in the oracle worlds 6 of 7 still matched).

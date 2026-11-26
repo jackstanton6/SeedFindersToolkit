@@ -93,6 +93,11 @@ mod py {
             })
         }
 
+        /// The block-level biome id at a block (what F3 shows).
+        fn block_biome(&self, seed: i64, x: i32, y: i32, z: i32) -> u16 {
+            Seeded::new(&self.w, seed).block_biome(&mut BiomeCtx::cached(), x, y, z)
+        }
+
         fn height(&self, seed: i64, x: i32, z: i32, ocean_floor: bool) -> i32 {
             let hm = if ocean_floor { Heightmap::OceanFloorWg } else { Heightmap::WorldSurfaceWg };
             Seeded::new(&self.w, seed).base_height(x, z, hm)

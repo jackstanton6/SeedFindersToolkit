@@ -36,7 +36,7 @@ fn climate_and_point_biomes_match() {
     for f in fixtures("climate") {
         let seed = f["seed"].as_i64().unwrap();
         let s = Seeded::new(w, seed);
-        let mut bc = BiomeCtx { ctx: Ctx::uncached(), last: None };
+        let mut bc = BiomeCtx::uncached();
         let (mut bad_vals, mut bad_biomes, mut n) = (0, 0, 0);
         for p in f["points"].as_array().unwrap() {
             let p = p.as_array().unwrap();
@@ -78,6 +78,30 @@ fn chunk_biomes_match() {
                 assert_eq!(w.biomes.name(got[i]), b.as_str().unwrap(), "seed {seed} chunk ({cx},{cz}) index {i}");
             }
         }
+    }
+}
+
+#[test]
+#[ignore]
+fn block_biomes_match() {
+    let w = world();
+    for f in fixtures("blockbiomes") {
+        let seed = f["seed"].as_i64().unwrap();
+        let s = Seeded::new(w, seed);
+        let mut bc = BiomeCtx::cached();
+        let mut bad = 0;
+        let pts = f["points"].as_array().unwrap();
+        for p in pts {
+            let (x, y, z) = (p[0].as_i64().unwrap() as i32, p[1].as_i64().unwrap() as i32, p[2].as_i64().unwrap() as i32);
+            let got = w.biomes.name(s.block_biome(&mut bc, x, y, z));
+            if got != p[3].as_str().unwrap() {
+                if bad < 10 {
+                    eprintln!("seed {seed} ({x},{y},{z}) got {got} want {}", p[3]);
+                }
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "seed {seed}: {bad}/{} block biome mismatches", pts.len());
     }
 }
 

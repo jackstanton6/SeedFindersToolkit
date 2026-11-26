@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SEEDS = [0, 12345, -4172144997902289642, 8675309]
-COUNTS = {"climate": 3000, "chunkbiomes": 20, "heights": 400, "structures": 48, "slime": 20000}
+COUNTS = {"climate": 3000, "chunkbiomes": 20, "heights": 400, "structures": 48, "slime": 20000, "blockbiomes": 20000}
 
 
 def classpath(version: str) -> str:
@@ -32,7 +32,7 @@ def run(version: str, mode: str, seed: int) -> Path:
 
 if __name__ == "__main__":
     version = sys.argv[1] if len(sys.argv) > 1 else "26.3"
-    modes = sys.argv[2:] or ["climate", "chunkbiomes", "heights"]
+    modes = sys.argv[2:] or ["climate", "chunkbiomes", "blockbiomes", "heights"]
     for mode in modes:
         for seed in SEEDS:
             print("wrote", run(version, mode, seed))

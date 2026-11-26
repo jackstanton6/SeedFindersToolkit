@@ -823,7 +823,8 @@ fn clauses(w: &World, c: &Cond, full: bool) -> Vec<Vec<Atom>> {
         Cond::And(v) => v.iter().flat_map(|c| clauses(w, c, full)).collect(),
         // (a1 and a2) or b implies a1 or b: one clause per branch, if every branch has one
         Cond::Or(v) => v.iter().map(|c| clauses(w, c, full).into_iter().next()).collect::<Option<Vec<_>>>().map(|f| vec![f.concat()]).unwrap_or_default(),
-        Cond::Metric { m: Metric::Biome { biomes, at, within, y, step }, min, max } if full && *step > 0 && *within >= 0 => {
+        // block-level biomes stay on the CPU (no zoom on the device yet)
+        Cond::Metric { m: Metric::Biome { biomes, at, within, y, step, exact: false }, min, max } if full && *step > 0 && *within >= 0 => {
             let mut a = [0; ATOM];
             a[0] = 4;
             a[1..5].copy_from_slice(&set_ints(*biomes));

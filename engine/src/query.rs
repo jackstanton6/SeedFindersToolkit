@@ -44,7 +44,8 @@ pub enum Metric {
     Chain { sels: Vec<Sel>, dist: i32, at: (i32, i32), within: i32 },
     Overlap { a: Sel, b: Sel, at: (i32, i32), within: i32, margin: i32 },
     Bingo { sels: Vec<Sel>, at: (i32, i32), within: i32 },
-    Biome { biomes: BiomeSet, at: (i32, i32), within: i32, y: i32, step: i32 },
+    /// `exact`: block-level (F3) biomes instead of the quart biomes structures use.
+    Biome { biomes: BiomeSet, at: (i32, i32), within: i32, y: i32, step: i32, exact: bool },
     BiomeArea { biomes: BiomeSet, at: (i32, i32), within: i32, window: i32, y: i32, step: i32 },
     BiomeCount { among: Option<BiomeSet>, at: (i32, i32), within: i32, y: i32, step: i32 },
     BiomeBorder { a: BiomeSet, b: BiomeSet, at: (i32, i32), within: i32, y: i32, step: i32 },
@@ -132,7 +133,7 @@ fn arguments(op: &str) -> &'static [&'static str] {
         "chain" => &["names", "dist", "at", "within", "biome", "tags"],
         "overlap" => &["a", "b", "at", "within", "margin", "biome", "tags"],
         "bingo" => &["names", "at", "within", "biome", "tags"],
-        "biome" => &["name", "at", "within", "y", "step", "fraction"],
+        "biome" => &["name", "at", "within", "y", "step", "fraction", "exact"],
         "biome_area" => &["name", "at", "within", "window", "y", "step"],
         "biome_count" => &["among", "at", "within", "y", "step"],
         "biome_border" => &["a", "b", "at", "within", "y", "step"],
@@ -267,7 +268,9 @@ impl Parser<'_> {
             }
             "biome" => {
                 let fraction = flt(v, "fraction", 0.0);
-                (Metric::Biome { biomes: self.biomes(&v["name"])?, at, within, y, step }, if fraction > 0.0 { fraction } else { f64::MIN_POSITIVE }, inf)
+                // a single point defaults to the block-level biome (what F3 shows)
+                let exact = v["exact"].as_bool().unwrap_or(within == 0);
+                (Metric::Biome { biomes: self.biomes(&v["name"])?, at, within, y, step, exact }, if fraction > 0.0 { fraction } else { f64::MIN_POSITIVE }, inf)
             }
             "biome_area" => (Metric::BiomeArea { biomes: self.biomes(&v["name"])?, at, within, window: int(v, "window", 512), y, step }, 1.0, inf),
             "biome_count" => {
@@ -1093,8 +1096,8 @@ impl<'w> Eval<'w> {
                 }
                 n
             }
-            Metric::Biome { biomes, at, within, y, step } => {
-                let g = self.grid(*at, *within, *y, *step);
+            Metric::Biome { biomes, at, within, y, step, exact } => {
+                let g = self.grid_at(*at, *within, *y, *step, *exact);
                 let disc: Vec<usize> = (0..g.ids.len()).filter(|&k| dist2(g.pos(k), *at) <= (*within as i64).pow(2)).collect();
                 disc.iter().filter(|&&k| contains(*biomes, g.ids[k])).count() as f64 / disc.len().max(1) as f64
             }
@@ -1217,6 +1220,11 @@ impl<'w> Eval<'w> {
     }
 
     fn grid(&mut self, at: (i32, i32), r: i32, y: i32, step: i32) -> Grid {
+        self.grid_at(at, r, y, step, false)
+    }
+
+    /// `exact`: block-level biomes (BiomeManager zoom over stored chunk biomes).
+    fn grid_at(&mut self, at: (i32, i32), r: i32, y: i32, step: i32, exact: bool) -> Grid {
         self.seeded();
         let (s, bc) = (self.s.as_ref().unwrap(), &mut self.bc);
         let n = 2 * (r / step) + 1;
@@ -1224,7 +1232,8 @@ impl<'w> Eval<'w> {
         let mut ids = Vec::with_capacity((n * n) as usize);
         for j in 0..n {
             for i in 0..n {
-                ids.push(s.biome(bc, (x0 + i * step) >> 2, y >> 2, (z0 + j * step) >> 2));
+                let (x, z) = (x0 + i * step, z0 + j * step);
+                ids.push(if exact { s.block_biome(bc, x, y, z) } else { s.biome(bc, x >> 2, y >> 2, z >> 2) });
             }
         }
         Grid { n, x0, z0, step, ids }
