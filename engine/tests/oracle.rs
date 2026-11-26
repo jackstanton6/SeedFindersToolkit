@@ -202,6 +202,36 @@ fn chunks_match(mode: &str, carvers: bool) {
     assert_eq!((bad, bad_h), (0, 0), "{bad}/{total} blocks, {bad_h} heightmap columns differ");
 }
 
+/// The bedrock_floor gradient alone predicts every floor block of the surface fixtures.
+#[test]
+#[ignore]
+fn bedrock_floor_matches() {
+    let w = world();
+    let (mut bad, mut n) = (0, 0);
+    for f in fixtures("surface") {
+        let seed = f["seed"].as_i64().unwrap();
+        for c in f["chunks"].as_array().unwrap() {
+            let (cx, cz) = (c["x"].as_i64().unwrap() as i32, c["z"].as_i64().unwrap() as i32);
+            let pal: Vec<&str> = c["palette"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+            let runs = c["runs"].as_array().unwrap();
+            let mut want = vec![];
+            for r in runs.chunks(2) {
+                want.extend(std::iter::repeat_n(r[0].as_u64().unwrap() as usize, r[1].as_u64().unwrap() as usize));
+            }
+            let mut obs = vec![];
+            for y in -64..-58 {
+                for i in 0..256 {
+                    let st = pal[want[((y + 64) * 256 + i) as usize]];
+                    obs.push((cx * 16 + (i & 15), y, cz * 16 + (i >> 4), st == "minecraft:bedrock"));
+                }
+            }
+            n += obs.len();
+            bad += obs.len() - sft_engine::chunk::bedrock_floor(w, seed, &obs);
+        }
+    }
+    assert_eq!(bad, 0, "{bad}/{n} floor blocks differ");
+}
+
 #[test]
 #[ignore]
 fn structures_match() {

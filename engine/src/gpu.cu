@@ -628,6 +628,42 @@ __device__ bool biome_atom(Lazy &l, const int *a) {
     return (double)hi / total >= mn && (double)lo / total <= mx;
 }
 
+// Mth.getSeed(x, y, z)
+__device__ __forceinline__ i64 pos_seed(int x, int y, int z) {
+    i64 s = (i64)(int)((unsigned)x * 3129871u) ^ (i64)z * 116129781LL ^ (i64)y;
+    s = (i64)((u64)s * (u64)s * 42317861ULL + (u64)s * 11ULL);
+    return s >> 16;
+}
+
+// chunk.rs bedrock_floor: every observed floor block (a[7..], x, z, 2 * y + is bedrock) as the
+// bedrock_floor gradient makes it (a[1..5] its name hash, a[5] the floor y); seed only
+__device__ bool bedrock_atom(i64 seed, const int *a) {
+    XR r;
+    u64 lo = (u64)seed ^ 0x6A09E667F3BCC909ULL;
+    xr_from(r, mix13(lo), mix13(lo + 0x9E3779B97F4A7C15ULL));
+    u64 plo = xr_next(r), phi = xr_next(r);
+    XR h;
+    xr_from(h, ((u64)(unsigned)a[1] | (u64)(unsigned)a[2] << 32) ^ plo, ((u64)(unsigned)a[3] | (u64)(unsigned)a[4] << 32) ^ phi);
+    u64 flo = xr_next(h), fhi = xr_next(h);
+    int t = a[5], f = a[5] + 5;
+    for (int i = 0; i < a[6]; i++) {
+        const int *o = a + 7 + 3 * i;
+        int y = o[2] >> 1;
+        bool want = o[2] & 1, got;
+        if (y <= t) got = true;
+        else if (y >= f) got = false;
+        else {
+            double p = 1.0 + ((double)y - (double)t) / ((double)f - (double)t) * (0.0 - 1.0);
+            XR q;
+            xr_from(q, (u64)pos_seed(o[0], y, o[1]) ^ flo, fhi);
+            float v = (float)(xr_next(q) >> 40) * 5.9604645e-8f;
+            got = (double)v < p;
+        }
+        if (got != want) return false;
+    }
+    return true;
+}
+
 // query.rs Metric::SpawnDistance within [min, max], the spawn known to `a[5]` blocks
 __device__ bool spawn_distance_atom(Lazy &l, const int *a) {
     if (!l.c) return true;
@@ -766,6 +802,7 @@ __device__ bool eval(i64 seed, Lazy &l) {
             case 2: ok = cell_atom(seed, a); break;
             case 3: ok = cluster_atom(seed, a); break;
             case 5: ok = spawn_distance_atom(l, a); break;
+            case 6: ok = bedrock_atom(seed, a); break;
             default: ok = biome_atom(l, a);
             }
         }

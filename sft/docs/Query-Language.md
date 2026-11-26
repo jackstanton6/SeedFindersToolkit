@@ -206,6 +206,17 @@ spawn_distance() >= 1000
 maximize(spawn_distance())
 ```
 
+### bedrock(blocks)
+
+How many observed floor blocks `[(x, y, z, is_bedrock), ...]` the seed reproduces; by default all of
+them must match. Meant for cracking (see [Search modes](Search-Modes.md)): it picks the right seed
+among the sisters of a structure seed. The floor gradient is checked first (fast, also on the GPU);
+seeds that pass are confirmed on generated chunks.
+
+```python
+bedrock(blocks=[(0, -63, 0, True), (1, -63, 0, False), (2, -62, 0, True)])
+```
+
 ### climate(param, at=(0,0), y=64)
 
 A raw climate parameter at a block position: `temperature`, `humidity`, `continentalness`,

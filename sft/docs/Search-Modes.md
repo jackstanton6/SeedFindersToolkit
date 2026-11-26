@@ -99,8 +99,21 @@ GPU) or once more than 2^24 structure seeds fit them; above 1,024 structure seed
 with the expected sister-check time. Use `/locate` positions: the piece positions that `sft locate`
 prints can lie in a neighbouring chunk.
 
+**Bedrock picks the sister.** Structures fix the low 48 bits; the floor (bedrock at y -63 to -60)
+depends on all 64, so a bedrock pattern chooses among the sisters:
+
+```sh
+python -m sft crack swamp_hut:-1200,840 desert_pyramid:310,-560 --bedrock 0,-63,0:1 1,-63,0:0 2,-63,0:1 ...
+```
+
+Read the layer from the side of a ravine or by digging (F3 for the coordinates): `:1` is bedrock,
+`:0` is not. Nearby floor blocks of one seed are strongly correlated (the game's positional random
+depends mostly on a few bits per seed), so it takes more blocks than you would expect: in tests,
+64 blocks left 1 to 5 sisters and 128 always picked the seed. Bedrock alone, without structures,
+cannot be cracked by brute force (2^64 seeds).
+
 In the GUI: Tools, Crack seed from structures (one `name x z` per line, an optional
-`query: ...` line). With GPU ticked the brute force runs on the graphics card (268M seeds in about
+`query: ...` line, and `bedrock x y z yes/no` lines). With GPU ticked the brute force runs on the graphics card (268M seeds in about
 0.7 s on an RTX 5070 Ti, start-up included).
 
 ## Cost model (measured, 24-thread desktop, 26.3)

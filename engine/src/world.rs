@@ -69,6 +69,11 @@ pub struct World {
 }
 
 impl World {
+    /// Whether this world's RandomState forks with Xoroshiro (all 26.x overworlds).
+    pub fn xoroshiro_random(&self) -> bool {
+        !self.legacy_random
+    }
+
     pub fn load(dir: &Path) -> Result<World, String> {
         let wg = dir.join("minecraft/worldgen");
         // Functions using unported (End/datapack-only) types are skipped; loading fails below only

@@ -55,6 +55,8 @@ pub enum Metric {
     Height { at: (i32, i32), ocean_floor: bool },
     Terrain { kind: Terrain, at: (i32, i32), within: i32, step: i32 },
     Slime { radius: i32, at: (i32, i32), within: i32 },
+    /// Observed floor blocks (x, y, z, is bedrock): how many the seed reproduces.
+    Bedrock { blocks: Vec<(i32, i32, i32, bool)> },
     /// `item` in the chests of one structure (the best one), or of all of them with `total`.
     Loot { s: Sel, item: String, enchant: Option<String>, at: (i32, i32), within: i32, total: bool },
     /// Best ruined portal: plain obsidian in its most complete frame (`frame`), or in the whole portal.
@@ -147,6 +149,7 @@ fn arguments(op: &str) -> &'static [&'static str] {
         "peak" | "trench" | "cliff" | "overhang" | "void" => &["at", "within", "step"],
         "lake" => &["fluid", "at", "within", "step"],
         "slime" => &["radius", "at", "within"],
+        "bedrock" => &["blocks"],
         "loot" => &["name", "item", "enchant", "at", "within", "total", "biome", "tags"],
         "portal_frame" | "portal_obsidian" => &["at", "within"],
         "spawn_distance" => &[],
@@ -338,6 +341,24 @@ impl Parser<'_> {
                 (Metric::Terrain { kind, at, within, step: int(v, "step", 32).max(1) }, min, inf)
             }
             "slime" => (Metric::Slime { radius: int(v, "radius", 128).max(0), at, within }, 1.0, inf),
+            "bedrock" => {
+                let bad = || format!("bedrock needs blocks=[(x, y, z, True/False), ...], got {}", v["blocks"]);
+                let blocks: Vec<(i32, i32, i32, bool)> = v["blocks"]
+                    .as_array()
+                    .ok_or_else(bad)?
+                    .iter()
+                    .map(|b| {
+                        let a = b.as_array().filter(|a| a.len() == 4).ok_or_else(bad)?;
+                        let i = |k: usize| a[k].as_i64().map(|n| n as i32).ok_or_else(bad);
+                        Ok((i(0)?, i(1)?, i(2)?, a[3].as_bool().or(a[3].as_i64().map(|n| n != 0)).ok_or_else(bad)?))
+                    })
+                    .collect::<Result<_, String>>()?;
+                if blocks.is_empty() {
+                    return Err(bad());
+                }
+                let n = blocks.len() as f64;
+                (Metric::Bedrock { blocks }, n, inf)
+            }
             "loot" => {
                 if let Err(e) = &self.w.loot {
                     return Err(format!("loot tables are not available ({e}); run `python -m sft data {}` again", self.w.version));
@@ -457,7 +478,8 @@ impl Metric {
                 pos.2 += d.1;
             }
             // anchored to the spawn, not to the moved point
-            Metric::Native { .. } | Metric::Spawn(_) | Metric::SpawnDistance => {}
+            // world coordinates, never moved
+            Metric::Native { .. } | Metric::Spawn(_) | Metric::SpawnDistance | Metric::Bedrock { .. } => {}
         }
     }
 }
@@ -978,6 +1000,23 @@ impl<'w> Eval<'w> {
         }
     }
 
+    /// How many observed floor blocks this seed reproduces. The bedrock_floor gradient decides
+    /// in solid ground; when it reproduces every block, the generated chunks confirm it (a cave or
+    /// aquifer there has no bedrock).
+    fn bedrock(&mut self, blocks: &[(i32, i32, i32, bool)]) -> usize {
+        let fast = crate::chunk::bedrock_floor(self.w, self.seed, blocks);
+        if fast < blocks.len() {
+            return fast;
+        }
+        let mut ch = crate::chunk::Chunks::new(self.w, self.seed);
+        blocks
+            .iter()
+            .filter(|&&(x, y, z, want)| {
+                ch.surface(x >> 4, z >> 4).is_ok_and(|c| (self.w.blocks.name(c.get(self.w, x, y, z)) == "minecraft:bedrock") == want)
+            })
+            .count()
+    }
+
     fn slime_max(&self, radius: i32, at: (i32, i32), within: i32) -> i32 {
         if within <= 0 {
             return slime_count(self.seed, at, radius);
@@ -1204,6 +1243,7 @@ impl<'w> Eval<'w> {
             }
             Metric::Terrain { kind, at, within, step } => self.terrain(*kind, *at, *within, *step),
             Metric::Slime { radius, at, within } => self.slime_max(*radius, *at, *within) as f64,
+            Metric::Bedrock { blocks } => self.bedrock(blocks) as f64,
             Metric::Loot { s, item, enchant, at, within, total } => {
                 let loot = self.w.loot.as_ref().expect("parse refuses loot without tables");
                 let (mut best, mut sum) = (0, 0);

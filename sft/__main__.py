@@ -81,7 +81,13 @@ def cmd_crack(a):
         name, _, xz = o.partition(":")
         x, z = (int(v) for v in xz.split(","))
         obs.append((name, x, z))
-    run_job(sft.CrackJob(a.version, obs, a.query, gpu=a.gpu, max_results=a.max), a)
+    blocks = []
+    for b in a.bedrock or []:  # x,y,z:1
+        xyz, _, flag = b.partition(":")
+        x, y, z = (int(v) for v in xyz.split(","))
+        blocks.append((x, y, z, flag.strip() not in ("0", "no", "false")))
+    query = " and ".join(q for q in (a.query, sft.bedrock_query(blocks)) if q)
+    run_job(sft.CrackJob(a.version, obs, query, gpu=a.gpu, max_results=a.max), a)
 
 
 def cmd_loot(a):
@@ -148,6 +154,8 @@ def main():
     cr = sub.add_parser("crack", help="find seeds from structures seen in a world")
     cr.add_argument("observations", nargs="+", help="structure:x,z (block coordinates), e.g. swamp_hut:-120,840")
     cr.add_argument("--query", default="", help="extra conditions the seed must meet (biomes, heights...)")
+    cr.add_argument("--bedrock", nargs="+", help="observed floor blocks x,y,z:1 (bedrock) or x,y,z:0 (not), y -63..-60; "
+                                                 "they pick the right one of each structure seed's 65,536 sisters")
     run_args(cr)
     lo = sub.add_parser("locate", help="list valid structure starts near a point")
     lo.add_argument("seed", type=int)

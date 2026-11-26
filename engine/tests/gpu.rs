@@ -162,6 +162,31 @@ fn gpu_biomes_match_cpu() {
     assert!(unsure * 1000 < n, "{unsure} unsure");
 }
 
+/// The bedrock atom keeps exactly the seeds whose bedrock_floor gradient reproduces the blocks.
+#[test]
+#[ignore]
+fn gpu_bedrock_matches_cpu() {
+    let w = world();
+    let g = gpu::get().expect("no usable CUDA device");
+    let truth = 123_456_789i64;
+    // the true seed's floor at 12 spots (y -63..-60)
+    let spots: Vec<(i32, i32, i32)> = (0..12).map(|i| (i * 7 - 40, -63 + i % 4, 300 - i * 13)).collect();
+    let probe: Vec<(i32, i32, i32, bool)> = spots.iter().map(|&(x, y, z)| (x, y, z, true)).collect();
+    let blocks: Vec<(i32, i32, i32, bool)> = spots
+        .iter()
+        .zip(&probe)
+        .map(|(&(x, y, z), p)| (x, y, z, sft_engine::chunk::bedrock_floor(&w, truth, std::slice::from_ref(p)) == 1))
+        .collect();
+    let cond = parse(&w, &[], &json!({"op": "bedrock", "blocks": blocks.iter().map(|b| json!([b.0, b.1, b.2, b.3])).collect::<Vec<_>>()})).unwrap();
+    let prog = gpu::program(&w, &cond, true);
+    assert!(!prog.is_empty());
+    let (base, n) = ((truth - 30_000) as u64, 1u64 << 16);
+    let got = g.filter(&prog, None, 0, base, 0, n, None).unwrap();
+    let cpu: Vec<u32> = (0..n as u32).filter(|&i| sft_engine::chunk::bedrock_floor(&w, base as i64 + i as i64, &blocks) == blocks.len()).collect();
+    assert!(cpu.contains(&30_000));
+    assert_eq!(got, cpu);
+}
+
 /// NoiseSpawnFinder on the device (a block per seed) against the CPU port.
 #[test]
 #[ignore]

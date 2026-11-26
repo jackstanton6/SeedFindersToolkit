@@ -869,6 +869,24 @@ fn clauses(w: &World, c: &Cond, full: bool) -> Vec<Vec<Atom>> {
         // (a1 and a2) or b implies a1 or b: one clause per branch, if every branch has one
         Cond::Or(v) => v.iter().map(|c| clauses(w, c, full).into_iter().next()).collect::<Option<Vec<_>>>().map(|f| vec![f.concat()]).unwrap_or_default(),
         Cond::Metric { m: Metric::Spawn(m), min, max } if full => spawn_clauses(w, m, *min, *max),
+        // every observed block must match: five per atom, each atom its own clause
+        Cond::Metric { m: Metric::Bedrock { blocks }, min, .. } if full && *min >= blocks.len() as f64 => {
+            let h = crate::rng::NameHash::of("minecraft:bedrock_floor").md5();
+            blocks
+                .chunks(5)
+                .map(|part| {
+                    let mut a = [0; ATOM];
+                    a[0] = 6;
+                    a[1..5].copy_from_slice(&[h.0 as u32 as i32, (h.0 >> 32) as u32 as i32, h.1 as u32 as i32, (h.1 >> 32) as u32 as i32]);
+                    a[5] = w.min_y;
+                    a[6] = part.len() as i32;
+                    for (i, &(x, y, z, b)) in part.iter().enumerate() {
+                        a[7 + 3 * i..10 + 3 * i].copy_from_slice(&[x, z, 2 * y + b as i32]);
+                    }
+                    vec![a]
+                })
+                .collect()
+        }
         Cond::Metric { m: Metric::SpawnDistance, min, max } if full => {
             let mut a = [0; ATOM];
             a[0] = 5;

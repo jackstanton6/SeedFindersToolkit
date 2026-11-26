@@ -27,7 +27,7 @@ POSITIONAL = {
     "overlap": ["a", "b"], "bingo": ["names"], "biome": ["name"], "biome_area": ["name"], "biome_count": [],
     "biome_border": ["a", "b"], "island": [], "climate": ["param"], "height": [], "peak": [], "trench": [],
     "cliff": [], "overhang": [], "void": [], "lake": ["fluid"], "slime": [], "loot": ["name", "item"], "portal_frame": [],
-    "portal_obsidian": [], "spawn_distance": [],
+    "portal_obsidian": [], "spawn_distance": [], "bedrock": ["blocks"],
     "native": ["plugin", "filter"], "py": ["name"], "maximize": ["expr"], "minimize": ["expr"], "anywhere": ["cond"],
 }
 CALLS = set(POSITIONAL)

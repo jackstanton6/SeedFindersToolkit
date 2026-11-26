@@ -676,20 +676,26 @@ class Main(QMainWindow):
         text, ok = QInputDialog.getMultiLineText(
             self, "crack", "One structure per line as 'name x z' (block coordinates from /locate or F3).\n"
             "Huts, temples, outposts, igloos and shipwrecks narrow the search the most.\n"
-            "Optional last line 'query: ...' adds conditions (biomes, heights) for the sister check.", "")
+            "Optional last line 'query: ...' adds conditions (biomes, heights) for the sister check.
+"
+            "Lines 'bedrock x y z yes' / 'bedrock x y z no' add the floor pattern (y -63 to -60): it picks the seed among the sisters.", "")
         if not ok or not text.strip():
             return
-        obs, extra = [], ""
+        obs, extra, floor = [], "", []
         try:
             for line in text.strip().splitlines():
                 if line.startswith("query:"):
                     extra = line.removeprefix("query:").strip()
+                elif line.startswith("bedrock"):
+                    _, x, y, z, flag = line.replace(",", " ").split()
+                    floor.append((int(x), int(y), int(z), flag.lower() in ("yes", "1", "true", "y")))
                 elif line.strip():
                     n, x, z = line.replace(",", " ").split()
                     obs.append((n, int(x), int(z)))
         except ValueError:
             QMessageBox.warning(self, "crack", f"cannot read line: {line}")
             return
+        extra = " and ".join(q for q in (extra, sft.bedrock_query(floor)) if q)
         if self.busy():
             QMessageBox.information(self, "crack", "a search is running: stop it first")
             return

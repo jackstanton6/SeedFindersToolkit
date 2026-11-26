@@ -158,6 +158,11 @@ def sisters(structure_seeds) -> list[int]:
     return out
 
 
+def bedrock_query(blocks) -> str:
+    """DSL for observed floor blocks [(x, y, z, is_bedrock)] (y -63..-60 decide; the bottom is all bedrock)."""
+    return f"bedrock(blocks={[(int(x), int(y), int(z), bool(b)) for x, y, z, b in blocks]})" if blocks else ""
+
+
 def observation_query(observations) -> str:
     """DSL requiring each observed start [(structure, x, z)] within a chunk of where it was seen."""
     return " and ".join(f"structure({n!r}, at=({x}, {z}), within=24)" for n, x, z in observations)

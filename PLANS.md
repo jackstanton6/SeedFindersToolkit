@@ -320,6 +320,10 @@ sisters on the GPU), jigsaw start columns (needs the start-piece choice), `biome
 
 ## M2 batch: spawn, block biomes, materials, full chunks (requested 2026-11-26)
 
+Order note (2026-11-26): after item 4, the items that do not need structure pieces or features
+(10, 8, 9, 11, 12, 13) go first, so the batch is usable while 5, 6 and 7 (the largest ports) follow.
+Block conditions are flagged ~approx until features land.
+
 Scope (agreed with the project owner): all of M2, made exact. That pulls in full overworld chunk
 generation: carvers (from M4), structure pieces and all overworld features (from M3). Work on
 master, one oracle-verified commit per item, in this order. Ground truth both ways: an
@@ -358,8 +362,21 @@ region files compared block by block).
   hunts); scattered ores via `block(...)`. Presets: red sand desert, ice spikes, terracotta at spawn.
 - [ ] 9. Cost: per-seed, per-thread chunk cache shared by all block conditions and spawn; each
   query generates only up to the last step that can change its blocks (same results).
-- [ ] 10. Bedrock cracking: a bedrock-pattern observation that picks the right sister of a cracked
+- [x] 10. Bedrock cracking: a bedrock-pattern observation that picks the right sister of a cracked
   structure seed (CPU and GPU). Plus a time-boxed study of a bedrock-only attack, written up here.
+  `bedrock(blocks=...)` (gradient check, GPU atom, confirmed on generated chunks), `crack --bedrock`,
+  GUI `bedrock x y z yes/no` lines. Floor blocks of one seed are strongly correlated: 64 observed
+  blocks left 1-5 of 65,536 sisters in tests, 128 always one.
+  Study (bedrock only): a floor block is the top bits of the first output of
+  Xoroshiro(posSeed ^ flo, fhi), where (flo, fhi) come from the seed via Xoroshiro(seed mix) ->
+  forkPositional -> fromHashOf("minecraft:bedrock_floor") -> forkPositional. The 24 output bits that
+  nextFloat uses depend mostly on the top bits of flo (posSeed covers only bits 0-47, plus its sign)
+  and on bits 30-46 of (s0 + fhi): that is why patterns cluster. An attack would (1) search those
+  ~32-40 effective bits of (flo, fhi) on the GPU for candidates consistent with a few hundred blocks,
+  (2) pin the remaining bits through carries across many positions (lattice/SAT), then (3) invert
+  two Xoroshiro128++ outputs to states twice (each step is 128 bits from two 64-bit outputs) and
+  mixStafford13 (a bijection) back to the seed. Steps 1 and 3 are straightforward; step 2 is open.
+  Not planned unless someone asks: cracking with structures + bedrock already works.
 - [ ] 11. GUI: spawn marker, surface block map layer, ore vein overlay (chosen y), chunk inspector
   (vertical slice / y-level view).
 - [ ] 12. API: `World.spawn`, `World.block`, `World.chunk`; CLI `spawn SEED` and `chunk SEED X Z`;

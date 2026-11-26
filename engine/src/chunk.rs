@@ -818,19 +818,43 @@ fn frozen_ocean(m: &Materials, sf: &Surface, w: &World, c: &mut Chunk, min_surfa
     }
 }
 
+/// How many observed floor blocks (x, y, z, is bedrock) the bedrock_floor rule reproduces for a
+/// seed, from its vertical gradient alone (as if every block there were solid ground).
+pub fn bedrock_floor(w: &World, seed: i64, blocks: &[(i32, i32, i32, bool)]) -> usize {
+    let r = if w.xoroshiro_random() { crate::rng::Xoroshiro::new(seed).fork_positional() } else { JavaRandom::new(seed).fork_positional() };
+    let f = r.from_hash("minecraft:bedrock_floor").fork_positional();
+    // the overworld bedrock_floor rule: true at and below min_y, false at and above min_y + 5
+    let (t, fa) = (w.min_y, w.min_y + 5);
+    blocks
+        .iter()
+        .filter(|&&(x, y, z, want)| {
+            let got = if y <= t {
+                true
+            } else if y >= fa {
+                false
+            } else {
+                let p = 1.0 + (y as f64 - t as f64) / (fa as f64 - t as f64) * (0.0 - 1.0);
+                (f.at(x, y, z).next_float() as f64) < p
+            };
+            got == want
+        })
+        .count()
+}
+
 /// Generated chunks of one seed, cached (per-seed, per-thread use).
 pub struct Chunks<'w> {
     pub s: Seeded<'w>,
     sf: Option<Surface>,
     bc: BiomeCtx,
     cache: HashMap<(i32, i32), Arc<Chunk>>,
+    surface_cache: HashMap<(i32, i32), Arc<Chunk>>,
 }
 
 impl<'w> Chunks<'w> {
     pub fn new(w: &'w World, seed: i64) -> Self {
         let mut s = Seeded::new(w, seed);
         s.prepare_terrain();
-        Chunks { s, sf: None, bc: BiomeCtx::cached(), cache: HashMap::new() }
+        Chunks { s, sf: None, bc: BiomeCtx::cached(), cache: HashMap::new(), surface_cache: HashMap::new() }
     }
 
     pub fn terrain(&mut self, cx: i32, cz: i32) -> Result<Arc<Chunk>, String> {
@@ -839,6 +863,16 @@ impl<'w> Chunks<'w> {
         }
         let c = Arc::new(self.generate(cx, cz, true)?);
         self.cache.insert((cx, cz), c.clone());
+        Ok(c)
+    }
+
+    /// The chunk after the material rules (no carvers), cached separately.
+    pub fn surface(&mut self, cx: i32, cz: i32) -> Result<Arc<Chunk>, String> {
+        if let Some(c) = self.surface_cache.get(&(cx, cz)) {
+            return Ok(c.clone());
+        }
+        let c = Arc::new(self.generate(cx, cz, false)?);
+        self.surface_cache.insert((cx, cz), c.clone());
         Ok(c)
     }
 
