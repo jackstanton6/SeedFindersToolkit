@@ -47,5 +47,16 @@ public class BlockProps {
         try (FileWriter w = new FileWriter(args[0])) {
             w.write(sb.toString());
         }
+        // each block's class (its canSurvive, placement and shape rules live there)
+        StringBuilder cl = new StringBuilder("{");
+        boolean first = true;
+        for (Block b : net.minecraft.core.registries.BuiltInRegistries.BLOCK) {
+            cl.append(first ? "" : ",").append('"').append(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b)).append("\":\"")
+                .append(b.getClass().getSimpleName()).append('"');
+            first = false;
+        }
+        try (FileWriter w = new FileWriter(args[1])) {
+            w.write(cl.append('}').toString());
+        }
     }
 }

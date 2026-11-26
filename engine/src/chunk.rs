@@ -14,8 +14,15 @@ use std::sync::Arc;
 pub const WORLD_SURFACE_WG: usize = 0;
 pub const OCEAN_FLOOR_WG: usize = 1;
 
-/// A chunk's blocks (index ((y - min_y) * 16 + z) * 16 + x) and its worldgen heightmaps (first
-/// free y per column, index z * 16 + x).
+pub const WORLD_SURFACE: usize = 2;
+pub const OCEAN_FLOOR: usize = 3;
+pub const MOTION_BLOCKING: usize = 4;
+pub const MOTION_BLOCKING_NO_LEAVES: usize = 5;
+
+/// A chunk's blocks (index ((y - min_y) * 16 + z) * 16 + x) and its heightmaps (first free y per
+/// column, index z * 16 + x): the worldgen ones (WORLD_SURFACE_WG, OCEAN_FLOOR_WG) are kept up to
+/// date until the chunk reaches TERRAIN, the final ones after it, primed on first use, as
+/// ProtoChunk does (`heightmapsAfter` of its persisted status).
 #[derive(Clone)]
 pub struct Chunk {
     pub x: i32,
@@ -23,12 +30,23 @@ pub struct Chunk {
     pub min_y: i32,
     pub height: i32,
     pub blocks: Vec<State>,
-    pub heights: [[i32; 256]; 2],
+    pub heights: [[i32; 256]; 6],
+    pub primed: [bool; 6],
+    /// The chunk is past TERRAIN: writes update the final heightmaps.
+    pub terrain_done: bool,
     /// ProtoChunk.postProcessing: per section, packed positions in the order they were marked.
     pub post: Vec<Vec<u16>>,
 }
 
 impl Chunk {
+    pub fn new(w: &World, x: i32, z: i32) -> Chunk {
+        Chunk {
+            x, z, min_y: w.min_y, height: w.height, blocks: vec![w.blocks.air; (16 * 16 * w.height) as usize],
+            heights: [[w.min_y; 256]; 6], primed: [true, true, false, false, false, false], terrain_done: false,
+            post: vec![vec![]; (w.height / 16) as usize],
+        }
+    }
+
     #[inline]
     fn idx(&self, x: i32, y: i32, z: i32) -> usize {
         (((y - self.min_y) * 16 + (z & 15)) * 16 + (x & 15)) as usize
@@ -42,20 +60,75 @@ impl Chunk {
         self.blocks[self.idx(x, y, z)]
     }
 
-    /// ProtoChunk.setBlockState: sets the block and updates the worldgen heightmaps.
+    /// ProtoChunk.setBlockState: sets the block and updates the heightmaps of the chunk's status
+    /// (priming missing final ones after the write).
     pub fn set(&mut self, m: &Materials, w: &World, x: i32, y: i32, z: i32, s: State) {
         if y < self.min_y || y >= self.min_y + self.height {
             return;
         }
         let i = self.idx(x, y, z);
         self.blocks[i] = s;
-        for hm in [WORLD_SURFACE_WG, OCEAN_FLOOR_WG] {
-            self.update_height(m, w, hm, x & 15, y, z & 15, s);
+        let maps: &[usize] = if self.terrain_done { &[WORLD_SURFACE, OCEAN_FLOOR, MOTION_BLOCKING, MOTION_BLOCKING_NO_LEAVES] } else { &[WORLD_SURFACE_WG, OCEAN_FLOOR_WG] };
+        let mut prime = vec![];
+        for &hm in maps {
+            if self.primed[hm] {
+                self.update_height(m, w, hm, x & 15, y, z & 15, s);
+            } else {
+                prime.push(hm);
+            }
+        }
+        self.prime(m, w, &prime);
+    }
+
+    /// A write that bypasses the heightmaps (LevelChunkSection.setBlockState, e.g. ore blobs).
+    pub fn set_raw(&mut self, w: &World, x: i32, y: i32, z: i32, s: State) {
+        if y >= w.min_y && y < w.min_y + w.height {
+            let i = self.idx(x, y, z);
+            self.blocks[i] = s;
         }
     }
 
     fn opaque(m: &Materials, w: &World, hm: usize, s: State) -> bool {
-        if hm == WORLD_SURFACE_WG { !w.blocks.is_air(s) } else { w.blocks.in_table(&m.motion, s) }
+        match hm {
+            WORLD_SURFACE_WG | WORLD_SURFACE => !w.blocks.is_air(s),
+            OCEAN_FLOOR_WG | OCEAN_FLOOR => w.blocks.in_table(&m.motion, s),
+            MOTION_BLOCKING => w.blocks.in_table(&m.motion, s) || w.blocks.has_fluid(s),
+            _ => w.blocks.in_table(&m.motion_no_leaves, s) || w.blocks.has_fluid(s),
+        }
+    }
+
+    /// Heightmap.primeHeightmaps
+    fn prime(&mut self, m: &Materials, w: &World, maps: &[usize]) {
+        if maps.is_empty() {
+            return;
+        }
+        let top_section = (0..self.blocks.len()).rev().find(|&i| self.blocks[i] != w.blocks.air).map_or(self.min_y, |i| self.min_y + (i / 4096 * 16) as i32 + 16);
+        for &hm in maps {
+            self.heights[hm] = [self.min_y; 256];
+            self.primed[hm] = true;
+        }
+        for x in 0..16 {
+            for z in 0..16 {
+                let mut left: Vec<usize> = maps.to_vec();
+                for y in (self.min_y..top_section).rev() {
+                    let st = self.blocks[self.idx(x, y, z)];
+                    if st != w.blocks.air {
+                        let mut k = 0;
+                        while k < left.len() {
+                            if Self::opaque(m, w, left[k], st) {
+                                self.heights[left[k]][(z * 16 + x) as usize] = y + 1;
+                                left.remove(k);
+                            } else {
+                                k += 1;
+                            }
+                        }
+                        if left.is_empty() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Heightmap.update
@@ -81,7 +154,6 @@ impl Chunk {
         }
     }
 
-    /// ChunkAccess.getHeight: the highest occupied y (first free - 1).
     /// ProtoChunk.markPosForPostProcessing
     pub fn mark(&mut self, x: i32, y: i32, z: i32) {
         let sec = ((y - self.min_y) >> 4) as usize;
@@ -90,8 +162,18 @@ impl Chunk {
         }
     }
 
+    /// ChunkAccess.getHeight: the highest occupied y (first free - 1). Final heightmaps must be
+    /// primed (see `height_mut`).
     pub fn height(&self, hm: usize, x: i32, z: i32) -> i32 {
         self.heights[hm][((z & 15) * 16 + (x & 15)) as usize] - 1
+    }
+
+    /// ChunkAccess.getHeight, priming the heightmap first if needed.
+    pub fn height_mut(&mut self, m: &Materials, w: &World, hm: usize, x: i32, z: i32) -> i32 {
+        if !self.primed[hm] {
+            self.prime(m, w, &[hm]);
+        }
+        self.height(hm, x, z)
     }
 }
 
@@ -157,6 +239,8 @@ pub struct Materials {
     dfs: Vec<Df>,
     /// blocks_motion_in_heightmap, per block (OCEAN_FLOOR heightmaps).
     pub motion: Vec<bool>,
+    /// blocks_motion_in_heightmap_no_leaves
+    pub motion_no_leaves: Vec<bool>,
     /// The uncarvable block tag, per block.
     pub uncarvable: Vec<bool>,
     // MaterialSystem's fixed blocks
@@ -271,6 +355,7 @@ impl Materials {
             randoms: p.randoms,
             dfs: p.dfs,
             motion: bl.tag_table("minecraft:blocks_motion_in_heightmap"),
+            motion_no_leaves: bl.tag_table("minecraft:blocks_motion_in_heightmap_no_leaves"),
             uncarvable: bl.tag_table("minecraft:uncarvable"),
             white: st("white_terracotta")?, orange: st("orange_terracotta")?, terracotta: st("terracotta")?, yellow: st("yellow_terracotta")?,
             brown: st("brown_terracotta")?, red: st("red_terracotta")?, light_gray: st("light_gray_terracotta")?,
@@ -586,10 +671,7 @@ impl World {
 pub fn terrain_chunk(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, cx: i32, cz: i32, carvers: bool) -> Result<Chunk, String> {
     let w = s.w;
     let m = w.materials()?;
-    let mut c = Chunk {
-        x: cx, z: cz, min_y: w.min_y, height: w.height, blocks: vec![w.blocks.air; (16 * 16 * w.height) as usize], heights: [[w.min_y; 256]; 2],
-        post: vec![vec![]; (w.height / 16) as usize],
-    };
+    let mut c = Chunk::new(w, cx, cz);
     // doFill: air is not written; heightmaps follow the blocks top-down
     let (fill, marks) = s.noise_chunk(cx, cz);
     for z in 0..16 {
@@ -613,6 +695,7 @@ pub fn terrain_chunk(s: &Seeded, sf: &Surface, bc: &mut BiomeCtx, cx: i32, cz: i
     if carvers {
         carve(s, sf, bc, &mut c)?;
     }
+    c.terrain_done = true;
     Ok(c)
 }
 

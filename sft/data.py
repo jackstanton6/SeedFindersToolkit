@@ -104,7 +104,8 @@ def write_block_props(work: Path, version: str, dest: Path) -> None:
     """Per block state the predicates worldgen asks for (collision shape kind, sturdy faces, fluid...),
     computed by the game's classes (sft/java/BlockProps.java) from the extracted server."""
     jars = [work / "versions" / version / f"server-{version}.jar", *sorted((work / "libraries").rglob("*.jar"))]
-    r = subprocess.run(["java", "-cp", os.pathsep.join(str(j) for j in jars), str(Path(__file__).parent / "java" / "BlockProps.java"), str(dest)],
+    r = subprocess.run(["java", "-cp", os.pathsep.join(str(j) for j in jars), str(Path(__file__).parent / "java" / "BlockProps.java"), str(dest),
+                        str(dest.with_name("block_classes.json"))],
                        cwd=work, capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError(f"block properties failed (java exit {r.returncode}):\n{(r.stderr or r.stdout)[-2000:]}")
